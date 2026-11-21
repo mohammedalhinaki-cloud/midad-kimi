@@ -146,9 +146,13 @@ export async function route() {
 async function init() {
   const { data: { session } } = await supabase.auth.getSession();
   state.user = session?.user || null;
-  supabase.auth.onAuthStateChange((_event, sess) => {
+  supabase.auth.onAuthStateChange((event, sess) => {
     state.user = sess?.user || null;
-    route();
+    // TOKEN_REFRESHED fires periodically; rerendering the whole app here wiped
+    // unsaved book forms while their owner was uploading a PDF.
+    if (['SIGNED_IN', 'SIGNED_OUT', 'USER_UPDATED', 'PASSWORD_RECOVERY', 'MFA_CHALLENGE_VERIFIED'].includes(event)) {
+      route();
+    }
   });
   window.addEventListener('hashchange', route);
   route();

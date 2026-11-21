@@ -10,6 +10,40 @@ import { state } from './main.js';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
 
+const BOOK_DRAFT_KEY = 'midad_admin_book_draft_v1';
+let pendingBookFile = null;
+
+function readBookDraft() {
+  const empty = { title: '', author: '', daily_pages: '3', start_date: '' };
+  try {
+    const draft = JSON.parse(sessionStorage.getItem(BOOK_DRAFT_KEY) || '{}');
+    return {
+      title: typeof draft.title === 'string' ? draft.title : empty.title,
+      author: typeof draft.author === 'string' ? draft.author : empty.author,
+      daily_pages: typeof draft.daily_pages === 'string' ? draft.daily_pages : empty.daily_pages,
+      start_date: typeof draft.start_date === 'string' ? draft.start_date : empty.start_date
+    };
+  } catch {
+    return empty;
+  }
+}
+
+function saveBookDraft(view) {
+  try {
+    sessionStorage.setItem(BOOK_DRAFT_KEY, JSON.stringify({
+      title: view.querySelector('#bf-title')?.value || '',
+      author: view.querySelector('#bf-author')?.value || '',
+      daily_pages: view.querySelector('#bf-daily')?.value ?? '3',
+      start_date: view.querySelector('#bf-date')?.value || ''
+    }));
+  } catch { /* session storage may be disabled; current form state still stays intact */ }
+}
+
+function clearBookDraft() {
+  pendingBookFile = null;
+  try { sessionStorage.removeItem(BOOK_DRAFT_KEY); } catch { /* ignore */ }
+}
+
 // ---------------------------------------------------------------------------
 // Dashboard
 // ---------------------------------------------------------------------------
@@ -372,6 +406,7 @@ export async function renderBooks(view) {
     const book = await fetchActiveBook();
     const settingsRes = await supabase.from('app_settings').select('*').eq('id', 1).single();
     const settings = settingsRes.data;
+    const bookDraft = readBookDraft();
 
     view.innerHTML = `
       <div class="card">
@@ -394,24 +429,21 @@ export async function renderBooks(view) {
       <div class="card">
         <h2>${book ? 'كتاب جديد' : 'إضافة كتاب'}</h2>
         <form id="book-form" autocomplete="off">
-          <div class="field"><label>عنوان الكتاب</label><input class="input" id="bf-title" /></div>
-          <div class="field"><label>المؤلف (اختياري)</label><input class="input" id="bf-author" /></div>
+          <div class="field"><label>عنوان الكتاب</label><input class="input" id="bf-title" value="${escapeHtml(bookDraft.title)}" /></div>
+          <div class="field"><label>المؤلف (اختياري)</label><input class="input" id="bf-author" value="${escapeHtml(bookDraft.author)}" /></div>
           <div class="field">
             <label>ملف PDF</label>
             <div class="row">
               <input class="file-input-hidden" id="bf-file" type="file" accept=".pdf,application/pdf" />
               <label class="btn btn-primary file-picker-label" for="bf-file">اختيار ملف PDF</label>
-              <span class="small muted" id="bf-file-status" aria-live="polite" dir="auto">اضغط لاختيار ملف PDF</span>
+              <span class="small muted" id="bf-file-status" aria-live="polite" dir="auto">${pendingBookFile ? `تم اختيار: ${escapeHtml(pendingBookFile.name)}` : 'اضغط لاختيار ملف PDF'}</span>
             </div>
           </div>
-          <div class="row">
-            <div class="field grow"><label>صفحة البداية</label><input class="input" id="bf-start" type="number" min="1" value="1" /></div>
-            <div class="field grow"><label>صفحة النهاية</label><input class="input" id="bf-end" type="number" min="1" placeholder="آخر صفحة" /></div>
-            <div class="field grow"><label>صفحات يوميًا</label><input class="input" id="bf-daily" type="number" min="1" value="3" /></div>
-          </div>
-          <div class="field"><label>تاريخ بداية القراءة</label><input class="input" id="bf-date" type="date" value="${riyadhToday()}" />
+          <div class="field"><label>صفحات يوميًا</label><input class="input" id="bf-daily" type="number" min="1" value="${escapeHtml(bookDraft.daily_pages)}" /></div>
+          <div class="field"><label>تاريخ بداية القراءة</label><input class="input" id="bf-date" type="date" value="${escapeHtml(bookDraft.start_date || riyadhToday())}" />
             <p class="small muted" id="bf-hijri"></p></div>
           <button type="submit" class="btn btn-primary btn-block">حفظ الكتاب</button>
+          <p class="small" id="bf-save-status" aria-live="polite"></p>
         </form>
       </div>
 
@@ -440,14 +472,19 @@ export async function renderBooks(view) {
         <button type="button" class="btn btn-primary" id="set-save">حفظ الإعدادات</button>
       </div>`;
 
-    let selectedBookFile = null;
+    const bookForm = view.querySelector('#book-form');
     const bookFileInput = view.querySelector('#bf-file');
     const bookFileStatus = view.querySelector('#bf-file-status');
+    const bookSaveStatus = view.querySelector('#bf-save-status');
+    const persistDraft = () => saveBookDraft(view);
+    bookForm.addEventListener('input', persistDraft);
+    bookForm.addEventListener('change', persistDraft);
     bookFileInput.addEventListener('change', () => {
-      selectedBookFile = bookFileInput.files?.item(0) || null;
-      bookFileStatus.textContent = selectedBookFile
-        ? `تم اختيار: ${selectedBookFile.name}`
+      pendingBookFile = bookFileInput.files?.item(0) || null;
+      bookFileStatus.textContent = pendingBookFile
+        ? `تم اختيار: ${pendingBookFile.name}`
         : 'اضغط لاختيار ملف PDF';
+      persistDraft();
     });
 
     // Hijri hints for date inputs
@@ -482,11 +519,7 @@ export async function renderBooks(view) {
           <form id="be-form">
             <div class="field"><label>العنوان</label><input class="input" id="be-title" value="${escapeHtml(book.title)}" /></div>
             <div class="field"><label>المؤلف</label><input class="input" id="be-author" value="${escapeHtml(book.author || '')}" /></div>
-            <div class="row">
-              <div class="field grow"><label>صفحة البداية</label><input class="input" id="be-start" type="number" min="1" value="${book.start_page}" /></div>
-              <div class="field grow"><label>صفحة النهاية</label><input class="input" id="be-end" type="number" min="1" value="${book.end_page ?? ''}" /></div>
-              <div class="field grow"><label>صفحات يوميًا</label><input class="input" id="be-daily" type="number" min="1" value="${book.daily_pages}" /></div>
-            </div>
+            <div class="field"><label>صفحات يوميًا</label><input class="input" id="be-daily" type="number" min="1" value="${book.daily_pages}" /></div>
             <button type="submit" class="btn btn-primary btn-block">حفظ</button>
           </form>`);
         overlay.querySelector('#be-form').addEventListener('submit', async (e) => {
@@ -494,8 +527,6 @@ export async function renderBooks(view) {
           const { error } = await supabase.from('books').update({
             title: overlay.querySelector('#be-title').value.trim(),
             author: overlay.querySelector('#be-author').value.trim() || null,
-            start_page: parseInt(overlay.querySelector('#be-start').value, 10),
-            end_page: overlay.querySelector('#be-end').value ? parseInt(overlay.querySelector('#be-end').value, 10) : null,
             daily_pages: parseInt(overlay.querySelector('#be-daily').value, 10)
           }).eq('id', book.id);
           if (error) return toast(error.message, 'error');
@@ -564,34 +595,26 @@ export async function renderBooks(view) {
       setupPagePicker(view, book);
     }
 
-    view.querySelector('#book-form').addEventListener('submit', async (e) => {
+    bookForm.addEventListener('submit', async (e) => {
       e.preventDefault();
       const title = view.querySelector('#bf-title').value.trim();
       const author = view.querySelector('#bf-author').value.trim() || null;
-      const file = selectedBookFile || bookFileInput.files?.item(0) || null;
-      const start_page = parseInt(view.querySelector('#bf-start').value, 10);
-      const endRaw = view.querySelector('#bf-end').value;
-      const end_page = endRaw ? parseInt(endRaw, 10) : null;
+      const file = pendingBookFile || bookFileInput.files?.item(0) || null;
       const daily_pages = parseInt(view.querySelector('#bf-daily').value, 10);
       const start_date = view.querySelector('#bf-date').value || riyadhToday();
       if (!title) return toast('أدخل عنوان الكتاب', 'error');
       if (!file) return toast('اضغط «اختيار ملف PDF» وحدد الملف أولًا.', 'error');
       if (!isPdfFile(file)) return toast('الملف المحدد ليس بصيغة PDF', 'error');
-      if (!start_page || start_page < 1) return toast('صفحة البداية غير صحيحة', 'error');
-      if (end_page != null && end_page < start_page) return toast('صفحة النهاية يجب أن تكون بعد البداية', 'error');
-      if (!daily_pages || daily_pages < 1) return toast('عدد الصفحات اليومية غير صحيح', 'error');
+      if (!Number.isInteger(daily_pages) || daily_pages < 1) return toast('عدد الصفحات اليومية غير صحيح', 'error');
 
       const btn = e.target.querySelector('button[type=submit]');
       btn.disabled = true; btn.textContent = 'جارٍ الرفع…';
+      bookSaveStatus.textContent = 'جارٍ التحقق من ملف PDF ورفعه…';
       let uploadedPath = null;
       let cleanupAfterDbError = false;
       let stage = 'فحص ملف PDF';
       try {
         const pageCount = await countPdfPages(file);
-        if (start_page > pageCount || (end_page != null && end_page > pageCount)) {
-          throw new Error(`عدد صفحات الملف ${pageCount}، وصفحة البداية أو النهاية تتجاوزه.`);
-        }
-
         const path = newPdfStoragePath();
         stage = 'رفع ملف PDF إلى التخزين الخاص';
         const { error: upErr } = await supabase.storage.from('books').upload(path, file, {
@@ -603,14 +626,16 @@ export async function renderBooks(view) {
         stage = 'حفظ بيانات الكتاب';
         const { data, error } = await supabase.from('books').insert({
           title, author, storage_path: path, file_name: file.name, page_count: pageCount,
-          start_page, end_page, daily_pages, start_date, created_by: state.profile.id
+          start_page: 1, end_page: pageCount, daily_pages, start_date, created_by: state.profile.id
         }).select().single();
         if (error) {
           cleanupAfterDbError = Boolean(error.code || error.status);
           throw error;
         }
+        if (!data?.id) throw new Error('لم يصل تأكيد حفظ الكتاب من قاعدة البيانات؛ احتفظت ببياناتك للمحاولة التالية.');
         uploadedPath = null;
         await logActivity('add_book', 'book', data.id, { title });
+        clearBookDraft();
         toast('تمت إضافة الكتاب بنجاح', 'ok');
         await renderBooks(view);
       } catch (err) {
@@ -622,8 +647,11 @@ export async function renderBooks(view) {
             console.warn('[مِداد] تعذر تنظيف ملف PDF غير المرتبط:', cleanupError);
           }
         }
+        const message = bookFileError(stage, err);
+        saveBookDraft(view);
+        bookSaveStatus.textContent = message;
         console.error('[مِداد] فشل إضافة ملف الكتاب:', stage, err);
-        toast(bookFileError(stage, err), 'error');
+        toast(message, 'error');
         btn.disabled = false; btn.textContent = 'حفظ الكتاب';
       }
     });
