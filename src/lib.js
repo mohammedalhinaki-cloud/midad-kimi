@@ -141,6 +141,14 @@ export async function callManageUsers(action, payload = {}) {
     body: { action, ...payload }
   });
   if (error) {
+    // Fetch errors usually mean a network/CORS failure; retain the underlying
+    // browser error in the console so it can be diagnosed without exposing it
+    // as an English SDK message to the user.
+    if (error.name === 'FunctionsFetchError') {
+      console.error('[مِداد] تعذّر الاتصال بدالة manage-users:', error.context);
+      throw new Error('تعذّر الاتصال بخدمة الحسابات ولم يصل رد يؤكد إتمام العملية. تحقّق من الحالة قبل إعادة المحاولة.');
+    }
+
     let msg = error.message || 'تعذر تنفيذ العملية';
     try {
       const ctx = await error.context.json();

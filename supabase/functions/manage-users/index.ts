@@ -10,7 +10,9 @@ const PIN_SUFFIX = 'MD'; // internal mapping: 4-digit PIN -> 6+ char Auth passwo
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-api-version, x-region',
+  'Access-Control-Max-Age': '86400',
 };
 
 function json(body: unknown, status = 200) {
