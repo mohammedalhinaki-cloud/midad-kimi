@@ -57,10 +57,42 @@ function apiError(result: { data: any }, fallback: string) {
   return typeof message === 'string' ? message : fallback;
 }
 
+function serviceAuthorization(key: string): string | null {
+  // New Supabase secret API keys are not JWTs and must not be sent as Bearer tokens.
+  // Legacy service_role keys are JWTs, so they remain valid Authorization tokens.
+  return key.startsWith('sb_secret_') ? null : `Bearer ${key}`;
+}
+
+function safeUpstreamReason(status: number) {
+  if (status === 401) return 'service_key_rejected';
+  if (status === 403) return 'database_permission_denied';
+  if (status === 404) return 'rest_endpoint_not_found';
+  return 'database_api_error';
+}
+
+async function healthCheck() {
+  try {
+    const supabaseUrl = (Deno.env.get('SUPABASE_URL') || '').replace(/\/+$/, '');
+    const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
+    if (!supabaseUrl || !serviceKey) return json({ ok: false, stage: 'configuration' }, 503);
+    const headers: Record<string, string> = { apikey: serviceKey };
+    const authorization = serviceAuthorization(serviceKey);
+    if (authorization) headers.Authorization = authorization;
+    const response = await fetch(`${supabaseUrl}/rest/v1/profiles?select=id&limit=1`, { headers });
+    if (!response.ok) {
+      return json({ ok: false, stage: 'profiles_query', status: response.status, reason: safeUpstreamReason(response.status) }, 503);
+    }
+    await response.body?.cancel();
+    return json({ ok: true, service: 'manage-users', database: 'connected' });
+  } catch {
+    return json({ ok: false, stage: 'database_api', reason: 'upstream_unreachable' }, 503);
+  }
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return preflightResponse(req);
-  // Safe unauthenticated connectivity probe; reveals no data or project secrets.
-  if (req.method === 'GET') return json({ ok: true, service: 'manage-users' });
+  // Safe, read-only probe: reports status only and never returns database rows or secrets.
+  if (req.method === 'GET') return await healthCheck();
   if (req.method !== 'POST') return json({ error: 'method_not_allowed' }, 405);
 
   try {
@@ -72,16 +104,16 @@ Deno.serve(async (req) => {
     async function apiRequest(
       path: string,
       apiKey: string,
-      authorization: string,
+      authorization: string | null,
       method = 'GET',
       body?: unknown,
       extraHeaders: Record<string, string> = {},
     ) {
       const headers: Record<string, string> = {
         apikey: apiKey,
-        Authorization: authorization,
         ...extraHeaders,
       };
+      if (authorization) headers.Authorization = authorization;
       if (body !== undefined) headers['Content-Type'] = 'application/json';
       const response = await fetch(`${supabaseUrl}${path}`, {
         method,
@@ -95,7 +127,7 @@ Deno.serve(async (req) => {
       return apiRequest(
         `/rest/v1/${resource}`,
         serviceKey,
-        `Bearer ${serviceKey}`,
+        serviceAuthorization(serviceKey),
         method,
         body,
         extraHeaders,
@@ -106,7 +138,7 @@ Deno.serve(async (req) => {
       return apiRequest(
         `/auth/v1/admin/${resource}`,
         serviceKey,
-        `Bearer ${serviceKey}`,
+        serviceAuthorization(serviceKey),
         method,
         body,
       );
@@ -144,7 +176,14 @@ Deno.serve(async (req) => {
     if (action === 'bootstrap_super_admin') {
       const query = new URLSearchParams({ role: 'eq.super_admin', select: 'id', limit: '1' });
       const existing = await rest('GET', `profiles?${query.toString()}`);
-      if (!existing.ok) return json({ error: 'bootstrap_check_failed' }, 500);
+      if (!existing.ok) {
+        console.error('[manage-users] bootstrap profiles query failed:', existing.status, existing.data?.code || '');
+        return json({
+          error: 'bootstrap_check_failed',
+          upstream_status: existing.status,
+          reason: safeUpstreamReason(existing.status),
+        }, 500);
+      }
       if (Array.isArray(existing.data) && existing.data.length > 0) {
         return json({ error: 'bootstrap_disabled' }, 403);
       }
