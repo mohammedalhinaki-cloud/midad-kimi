@@ -396,7 +396,14 @@ export async function renderBooks(view) {
         <form id="book-form" autocomplete="off">
           <div class="field"><label>عنوان الكتاب</label><input class="input" id="bf-title" /></div>
           <div class="field"><label>المؤلف (اختياري)</label><input class="input" id="bf-author" /></div>
-          <div class="field"><label>ملف PDF</label><input class="input" id="bf-file" type="file" accept=".pdf,application/pdf" /></div>
+          <div class="field">
+            <label>ملف PDF</label>
+            <div class="row">
+              <input class="file-input-hidden" id="bf-file" type="file" accept=".pdf,application/pdf" />
+              <label class="btn btn-primary file-picker-label" for="bf-file">اختيار ملف PDF</label>
+              <span class="small muted" id="bf-file-status" aria-live="polite" dir="auto">اضغط لاختيار ملف PDF</span>
+            </div>
+          </div>
           <div class="row">
             <div class="field grow"><label>صفحة البداية</label><input class="input" id="bf-start" type="number" min="1" value="1" /></div>
             <div class="field grow"><label>صفحة النهاية</label><input class="input" id="bf-end" type="number" min="1" placeholder="آخر صفحة" /></div>
@@ -432,6 +439,16 @@ export async function renderBooks(view) {
           <input class="input" id="set-seconds" type="number" min="0" value="${settings?.min_page_seconds ?? 60}" /></div>
         <button type="button" class="btn btn-primary" id="set-save">حفظ الإعدادات</button>
       </div>`;
+
+    let selectedBookFile = null;
+    const bookFileInput = view.querySelector('#bf-file');
+    const bookFileStatus = view.querySelector('#bf-file-status');
+    bookFileInput.addEventListener('change', () => {
+      selectedBookFile = bookFileInput.files?.item(0) || null;
+      bookFileStatus.textContent = selectedBookFile
+        ? `تم اختيار: ${selectedBookFile.name}`
+        : 'اضغط لاختيار ملف PDF';
+    });
 
     // Hijri hints for date inputs
     const bindHijri = (inputId, hintId) => {
@@ -551,14 +568,15 @@ export async function renderBooks(view) {
       e.preventDefault();
       const title = view.querySelector('#bf-title').value.trim();
       const author = view.querySelector('#bf-author').value.trim() || null;
-      const file = view.querySelector('#bf-file').files?.[0];
+      const file = selectedBookFile || bookFileInput.files?.item(0) || null;
       const start_page = parseInt(view.querySelector('#bf-start').value, 10);
       const endRaw = view.querySelector('#bf-end').value;
       const end_page = endRaw ? parseInt(endRaw, 10) : null;
       const daily_pages = parseInt(view.querySelector('#bf-daily').value, 10);
       const start_date = view.querySelector('#bf-date').value || riyadhToday();
-      if (!title || !file) return toast('أدخل العنوان وملف PDF', 'error');
-      if (!isPdfFile(file)) return toast('اختر ملفًا بصيغة PDF', 'error');
+      if (!title) return toast('أدخل عنوان الكتاب', 'error');
+      if (!file) return toast('اضغط «اختيار ملف PDF» وحدد الملف أولًا.', 'error');
+      if (!isPdfFile(file)) return toast('الملف المحدد ليس بصيغة PDF', 'error');
       if (!start_page || start_page < 1) return toast('صفحة البداية غير صحيحة', 'error');
       if (end_page != null && end_page < start_page) return toast('صفحة النهاية يجب أن تكون بعد البداية', 'error');
       if (!daily_pages || daily_pages < 1) return toast('عدد الصفحات اليومية غير صحيح', 'error');
