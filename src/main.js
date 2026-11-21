@@ -1,7 +1,8 @@
 import './style.css';
 import { supabase } from './lib.js';
+import { hasAuthIdentityChanged } from './auth-routing.js';
 import { renderLogin } from './login.js';
-import { renderMemberHome, renderMemberHistory } from './member.js';
+import { renderMemberHome, renderMemberHistory, renderAssistantReading } from './member.js';
 import { renderReader } from './reader.js';
 import {
   renderAdminDashboard, renderAdminMembers, renderMemberDetail,
@@ -14,7 +15,8 @@ export const state = { user: null, profile: null };
 
 async function loadProfile() {
   if (!state.user) return null;
-  const { data } = await supabase.from('profiles').select('*').eq('id', state.user.id).maybeSingle();
+  const { data, error } = await supabase.from('profiles').select('*').eq('id', state.user.id).maybeSingle();
+  if (error) throw error;
   return data || null;
 }
 
@@ -28,6 +30,7 @@ function renderShell(active) {
   } else if (p.role === 'assistant_admin') {
     nav = `
       <a href="#/admin" class="${active === 'admin' ? 'active' : ''}">الرئيسية</a>
+      <a href="#/admin/reading" class="${active === 'reading' ? 'active' : ''}">القراءة</a>
       <a href="#/admin/members" class="${active === 'members' ? 'active' : ''}">الأعضاء</a>
       <a href="#/admin/books" class="${active === 'books' ? 'active' : ''}">الكتاب</a>
       <a href="#/admin/reports" class="${active === 'reports' ? 'active' : ''}">التقارير</a>
@@ -56,12 +59,7 @@ function renderShell(active) {
       <nav class="nav">${nav}</nav>
     </header>
     <main class="${viewClass}" id="view"></main>`;
-  document.getElementById('logout-btn').addEventListener('click', async () => {
-    await supabase.auth.signOut();
-    state.user = null; state.profile = null;
-    location.hash = '#/login';
-    route();
-  });
+  document.getElementById('logout-btn').addEventListener('click', () => { void handleLogout(); });
 }
 
 function renderBlocked() {
@@ -75,12 +73,30 @@ function renderBlocked() {
       <p>${msg}</p>
       <button type="button" class="btn btn-block" id="logout-btn">تسجيل الخروج</button>
     </div></div>`;
-  document.getElementById('logout-btn').addEventListener('click', async () => {
-    await supabase.auth.signOut();
-    state.user = null; state.profile = null;
-    location.hash = '#/login';
-    route();
-  });
+  document.getElementById('logout-btn').addEventListener('click', () => { void handleLogout(); });
+}
+
+function renderProfileRetry() {
+  app.innerHTML = `
+    <div class="login-wrap"><div class="card login-card center">
+      <h1>مِداد</h1>
+      <p>تعذر تحميل بيانات الحساب مؤقتًا. بقي تسجيل الدخول محفوظًا؛ تحقق من الاتصال ثم أعد المحاولة.</p>
+      <div class="row" style="justify-content:center">
+        <button type="button" class="btn btn-primary" id="retry-profile-btn">إعادة المحاولة</button>
+        <button type="button" class="btn" id="logout-btn">تسجيل الخروج</button>
+      </div>
+    </div></div>`;
+  document.getElementById('retry-profile-btn').addEventListener('click', () => { void route(); });
+  document.getElementById('logout-btn').addEventListener('click', () => { void handleLogout(); });
+}
+
+async function handleLogout() {
+  const alreadyAtLogin = location.hash === '#/login';
+  state.user = null;
+  state.profile = null;
+  if (alreadyAtLogin) void route();
+  else location.hash = '#/login';
+  await supabase.auth.signOut();
 }
 
 let routeRequestId = 0;
@@ -95,8 +111,17 @@ export async function route() {
     return;
   }
 
-  state.profile = await loadProfile();
+  let profile;
+  try {
+    profile = await loadProfile();
+  } catch (error) {
+    if (requestId !== routeRequestId) return;
+    console.error('[مِداد] تعذر تحميل بيانات الملف الشخصي:', error);
+    renderProfileRetry();
+    return;
+  }
   if (requestId !== routeRequestId) return;
+  state.profile = profile;
   if (!state.profile) {
     await supabase.auth.signOut();
     if (requestId !== routeRequestId) return;
@@ -111,10 +136,21 @@ export async function route() {
 
   const role = state.profile.role;
 
-  // Reader is full-width (no standard container padding)
-  if (parts[0] === 'read' && parts[1]) {
+  // Reading is available to members and assistant admins only; super admins
+  // remain outside the reading program, including on direct hash navigation.
+  if (parts[0] === 'read') {
+    if (role !== 'member' && role !== 'assistant_admin') {
+      location.hash = role === 'super_admin' ? '#/super' : '#/admin';
+      return;
+    }
+    if (!parts[1]) {
+      location.hash = role === 'assistant_admin' ? '#/admin/reading' : '#/member';
+      return;
+    }
+    const homePath = role === 'assistant_admin' ? '#/admin/reading' : '#/member';
+    const historyPath = role === 'assistant_admin' ? homePath : '#/member/history';
     renderShell('read');
-    renderReader(document.getElementById('view'), parts[1]);
+    renderReader(document.getElementById('view'), parts[1], { homePath, historyPath });
     return;
   }
 
@@ -137,6 +173,15 @@ export async function route() {
     }
     if (parts[0] === 'admin') {
       const sub = parts[1];
+      if (sub === 'reading') {
+        if (role === 'super_admin') {
+          location.hash = '#/super';
+          return;
+        }
+        renderShell('reading');
+        renderAssistantReading(view());
+        return;
+      }
       renderShell(sub === 'members' || sub === 'member' ? 'members' : sub === 'books' ? 'books' : sub === 'reports' ? 'reports' : sub === 'logs' ? 'logs' : 'admin');
       if (sub === 'members') renderAdminMembers(view());
       else if (sub === 'member' && parts[2]) renderMemberDetail(view(), parts[2]);
@@ -158,19 +203,16 @@ async function init() {
   const { data: { session } } = await supabase.auth.getSession();
   state.user = session?.user || null;
   if (!appListenersBound) {
-    supabase.auth.onAuthStateChange((event, sess) => {
+    supabase.auth.onAuthStateChange((_event, sess) => {
       const previousUserId = state.user?.id || null;
       const nextUser = sess?.user || null;
       const nextUserId = nextUser?.id || null;
       state.user = nextUser;
 
-      // Ignore duplicate sign-in notifications for the same session; they can
-      // otherwise redraw the whole view and look like an unsolicited refresh.
-      if (event === 'SIGNED_IN' && previousUserId === nextUserId) return;
-      if (event === 'SIGNED_OUT' && previousUserId === null && nextUserId === null) return;
-      if (['SIGNED_IN', 'SIGNED_OUT', 'USER_UPDATED', 'PASSWORD_RECOVERY', 'MFA_CHALLENGE_VERIFIED'].includes(event)) {
-        void route();
-      }
+      // Token refreshes and same-account auth notifications must not rebuild
+      // the current screen. Defer routing until Supabase finishes its callback.
+      if (!hasAuthIdentityChanged(previousUserId, nextUserId)) return;
+      window.setTimeout(() => { void route(); }, 0);
     });
     window.addEventListener('hashchange', () => { void route(); });
     appListenersBound = true;
