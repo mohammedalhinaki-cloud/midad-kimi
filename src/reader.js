@@ -4,7 +4,7 @@ import { supabase, toast, escapeHtml, toArabicDigits } from './lib.js';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
 
-const TOO_FAST_MSG = 'لم يكتمل وقت هذه الصفحة بعد. ابقَ عليها حتى ينتهي العداد؛ ستبقى في الصفحة نفسها.';
+const TOO_FAST_MSG = 'صايدينك! 🧐 ما شاء الله تقرأ بسرعة الضوء؟ ارجع كمّل الصفحة لا تتحمس.';
 const PENDING_KEY = 'midad_pending_confirm';
 
 function getPending() {
@@ -20,32 +20,25 @@ export async function renderReader(view, assignmentId) {
   let assignment = null;
   let book = null;
   let session = null;
-  let minSeconds = 60;
   let position = 0;
-  let pageShownAt = 0;
   let pageReady = false;
   let navigationInFlight = false;
   let finishing = false;
   let disposed = false;
   let renderVersion = 0;
   let renderTask = null;
-  let pageTimer = null;
+  let lastRenderWidth = 0;
   let resizeTimer = null;
   let resizeHandler = null;
   let onlineHandler = null;
   let hashChangeHandler = null;
+  let fullscreenHandler = null;
 
   const total = () => assignment.end_page - assignment.start_page + 1;
-
-  function clearPageTimer() {
-    if (pageTimer) clearInterval(pageTimer);
-    pageTimer = null;
-  }
 
   function cleanup() {
     if (disposed) return;
     disposed = true;
-    clearPageTimer();
     if (resizeTimer) clearTimeout(resizeTimer);
     try { renderTask?.cancel(); } catch { /* render may already have completed */ }
     renderTask = null;
@@ -56,6 +49,14 @@ export async function renderReader(view, assignmentId) {
     if (resizeHandler) window.removeEventListener('resize', resizeHandler);
     if (onlineHandler) window.removeEventListener('online', onlineHandler);
     if (hashChangeHandler) window.removeEventListener('hashchange', hashChangeHandler);
+    if (fullscreenHandler) document.removeEventListener('fullscreenchange', fullscreenHandler);
+    document.body.classList.remove('reader-fallback-fullscreen');
+    if (document.fullscreenElement === view) {
+      try {
+        const exitPromise = document.exitFullscreen?.();
+        if (exitPromise?.catch) exitPromise.catch(() => {});
+      } catch { /* fullscreen may already be closing */ }
+    }
   }
 
   function showMsg(text) {
@@ -65,39 +66,39 @@ export async function renderReader(view, assignmentId) {
 
   function updateNextAvailability() {
     const button = view.querySelector('#next-btn');
-    const hint = view.querySelector('#page-timer');
     if (!button) return;
-    if (disposed || navigationInFlight) {
-      button.disabled = true;
-      return;
-    }
-    if (!pageReady) {
-      button.disabled = true;
-      if (hint) hint.textContent = 'جارٍ عرض الصفحة…';
-      return;
-    }
-    if (position < session.current_position) {
-      button.disabled = false;
-      if (hint) hint.textContent = '';
-      return;
-    }
-
-    const remaining = Math.max(0, minSeconds - (Date.now() - pageShownAt) / 1000);
-    const seconds = Math.ceil(remaining);
-    button.disabled = remaining > 0;
-    if (hint) hint.textContent = remaining > 0
-      ? `يمكن الانتقال بعد ${toArabicDigits(seconds)} ثانية`
-      : '';
+    // Keep Next available at all times; the server decides whether enough time passed.
+    button.disabled = false;
+    button.setAttribute('aria-busy', String(navigationInFlight));
+    if (navigationInFlight) button.title = 'جارٍ التحقق من الصفحة…';
+    else button.removeAttribute('title');
   }
 
-  function startPageTimer() {
-    clearPageTimer();
-    updateNextAvailability();
-    if (!pageReady || position < session.current_position || minSeconds <= 0) return;
-    pageTimer = setInterval(() => {
-      updateNextAvailability();
-      if (Date.now() - pageShownAt >= minSeconds * 1000) clearPageTimer();
-    }, 250);
+  function updateFullscreenButton() {
+    const button = view.querySelector('#fullscreen-btn');
+    if (!button) return;
+    const active = document.fullscreenElement === view
+      || document.body.classList.contains('reader-fallback-fullscreen');
+    const label = button.querySelector('.fullscreen-label');
+    if (label) label.textContent = active ? 'إنهاء ملء الشاشة' : 'ملء الشاشة';
+    button.setAttribute('aria-pressed', String(active));
+  }
+
+  async function toggleFullscreen() {
+    const fallbackActive = document.body.classList.contains('reader-fallback-fullscreen');
+    if (document.fullscreenElement === view) {
+      try { await document.exitFullscreen(); } catch { /* browser may exit via Esc */ }
+    } else if (fallbackActive) {
+      document.body.classList.remove('reader-fallback-fullscreen');
+    } else {
+      try {
+        if (typeof view.requestFullscreen !== 'function') throw new Error('Fullscreen API unavailable');
+        await view.requestFullscreen();
+      } catch {
+        document.body.classList.add('reader-fallback-fullscreen');
+      }
+    }
+    updateFullscreenButton();
   }
 
   function cancelRender() {
@@ -107,7 +108,7 @@ export async function renderReader(view, assignmentId) {
     return renderVersion;
   }
 
-  function draw({ resetPageTimer = true } = {}) {
+  function draw() {
     if (disposed || !assignment || !book || !session) return;
     const pageCount = total();
     if (pageCount <= 0) return;
@@ -115,10 +116,6 @@ export async function renderReader(view, assignmentId) {
     const pdfPage = assignment.start_page + position;
     const renderToken = cancelRender();
     pageReady = false;
-    if (resetPageTimer) {
-      pageShownAt = 0;
-      clearPageTimer();
-    }
 
     const remaining = Math.max(0, pageCount - session.current_position);
     view.innerHTML = `
@@ -130,7 +127,12 @@ export async function renderReader(view, assignmentId) {
               صفحة PDF ${toArabicDigits(pdfPage)} · التقدم: ${toArabicDigits(session.current_position)} من ${toArabicDigits(pageCount)}
             </div>
           </div>
-          <a class="btn btn-sm" href="#/member">رجوع</a>
+          <div class="row reader-actions">
+            <button type="button" class="btn btn-sm" id="fullscreen-btn" aria-pressed="false">
+              <span aria-hidden="true">⛶</span><span class="fullscreen-label">ملء الشاشة</span>
+            </button>
+            <a class="btn btn-sm" href="#/member">رجوع</a>
+          </div>
         </div>
         <div class="reader-canvas-box" id="canvas-box" style="margin-top:10px">
           <canvas id="page-canvas" aria-label="صفحة الكتاب ${toArabicDigits(pdfPage)}"></canvas>
@@ -140,12 +142,12 @@ export async function renderReader(view, assignmentId) {
           <button type="button" class="btn" id="prev-btn" ${position === 0 ? 'disabled' : ''}>السابق</button>
           <span class="small muted">المتبقي: ${toArabicDigits(remaining)} ${remaining === 1 ? 'صفحة' : 'صفحات'}</span>
           <button type="button" class="btn btn-primary" id="next-btn">${position === pageCount - 1 ? 'إنهاء القراءة' : 'التالي'}</button>
-          <span class="small muted reader-timer" id="page-timer" aria-live="polite"></span>
         </div>
       </div>`;
 
     updateNextAvailability();
-    void renderCurrentPage(renderToken, pdfPage, resetPageTimer);
+    updateFullscreenButton();
+    void renderCurrentPage(renderToken, pdfPage);
 
     view.querySelector('#prev-btn').addEventListener('click', () => {
       if (navigationInFlight || position <= 0) return;
@@ -153,6 +155,7 @@ export async function renderReader(view, assignmentId) {
       draw();
     });
     view.querySelector('#next-btn').addEventListener('click', onNext);
+    view.querySelector('#fullscreen-btn').addEventListener('click', () => void toggleFullscreen());
 
     const box = view.querySelector('#canvas-box');
     let touchX = null;
@@ -173,7 +176,7 @@ export async function renderReader(view, assignmentId) {
     }, { passive: true });
   }
 
-  async function renderCurrentPage(renderToken, pdfPageNumber, resetPageTimer = false) {
+  async function renderCurrentPage(renderToken, pdfPageNumber) {
     const canvas = view.querySelector('#page-canvas');
     if (!canvas || !pdf || disposed) return;
     try {
@@ -181,6 +184,7 @@ export async function renderReader(view, assignmentId) {
       if (disposed || renderToken !== renderVersion || !canvas.isConnected) return;
 
       const containerWidth = canvas.parentElement?.clientWidth || view.clientWidth || window.innerWidth;
+      lastRenderWidth = containerWidth;
       const baseViewport = page.getViewport({ scale: 1 });
       const viewport = page.getViewport({ scale: containerWidth / baseViewport.width });
       const outputScale = Math.min(Math.max(window.devicePixelRatio || 1, 1), 2.5);
@@ -196,9 +200,8 @@ export async function renderReader(view, assignmentId) {
       await currentTask.promise;
       if (disposed || renderToken !== renderVersion || !canvas.isConnected) return;
 
-      if (resetPageTimer || !pageShownAt) pageShownAt = Date.now();
       pageReady = true;
-      startPageTimer();
+      updateNextAvailability();
     } catch (error) {
       if (error?.name === 'RenderingCancelledException' || error?.name === 'AbortException') return;
       if (!disposed && renderToken === renderVersion) {
@@ -230,9 +233,6 @@ export async function renderReader(view, assignmentId) {
     const bookResult = await supabase.from('books').select('*').eq('id', assignment.book_id).single();
     if (bookResult.error) throw bookResult.error;
     book = bookResult.data;
-
-    const settingsResult = await supabase.from('app_settings').select('min_page_seconds').eq('id', 1).maybeSingle();
-    if (settingsResult.data) minSeconds = Math.max(0, Number(settingsResult.data.min_page_seconds) || 0);
 
     const { data: signed, error: signError } = await supabase.storage
       .from('books').createSignedUrl(book.storage_path, 3600);
@@ -275,7 +275,11 @@ export async function renderReader(view, assignmentId) {
 
   async function onNext() {
     const button = view.querySelector('#next-btn');
-    if (!button || button.disabled || navigationInFlight || disposed || !pageReady) return;
+    if (!button || navigationInFlight || disposed) return;
+    if (!pageReady) {
+      showMsg('جارٍ عرض الصفحة؛ جرّب الضغط مجددًا بعد اكتمال العرض.');
+      return;
+    }
     if (session.status === 'completed' || session.current_position >= total()) {
       await finishReading();
       return;
@@ -293,14 +297,9 @@ export async function renderReader(view, assignmentId) {
       return;
     }
 
-    if ((Date.now() - pageShownAt) / 1000 < minSeconds) {
-      updateNextAvailability();
-      showMsg(TOO_FAST_MSG);
-      return;
-    }
-
     navigationInFlight = true;
     updateNextAvailability();
+    showMsg('جارٍ التحقق من الصفحة…');
     try {
       const confirmation = await confirmCurrentPage();
       if (disposed) return;
@@ -321,11 +320,9 @@ export async function renderReader(view, assignmentId) {
       if (disposed) return;
       const message = String(error?.message || '');
       if (message.includes('too_fast')) {
-        // Keep the same page visible and wait again; a rejected confirmation
-        // must not reset or move the reader to an earlier page.
-        pageShownAt = Date.now();
+        // The server remains authoritative; rejected attempts never advance or
+        // redraw the current page, and the student can continue reading.
         showMsg(TOO_FAST_MSG);
-        startPageTimer();
       } else if (message.includes('wrong_order') || message.includes('already_finished') || message.includes('already_completed')) {
         try { await syncSessionFromServer(); }
         catch (syncError) { toast('تعذر مزامنة التقدم: ' + syncError.message, 'error'); }
@@ -395,6 +392,9 @@ export async function renderReader(view, assignmentId) {
       });
       let confirmed = !error;
       let freshSession = null;
+      if (error && String(error.message || '').includes('too_fast') && session?.id === pending.session_id) {
+        showMsg(TOO_FAST_MSG);
+      }
       if (error && ['wrong_order', 'already_finished', 'already_completed'].some((code) => String(error.message || '').includes(code))) {
         const result = await supabase.from('reading_sessions').select('*').eq('id', pending.session_id).single();
         freshSession = result.data;
@@ -440,20 +440,27 @@ export async function renderReader(view, assignmentId) {
   resizeHandler = () => {
     if (resizeTimer) clearTimeout(resizeTimer);
     resizeTimer = setTimeout(() => {
-      if (disposed || !pdf || !view.querySelector('#page-canvas')) return;
+      const canvas = view.querySelector('#page-canvas');
+      if (disposed || !pdf || !canvas) return;
+      const width = canvas.parentElement?.clientWidth || view.clientWidth || window.innerWidth;
+      // Mobile browser chrome can trigger frequent height-only resize events.
+      // Redraw only when the actual PDF viewport width changed.
+      if (Math.abs(width - lastRenderWidth) < 2) return;
       const token = cancelRender();
       pageReady = false;
       updateNextAvailability();
-      void renderCurrentPage(token, assignment.start_page + position, false);
+      void renderCurrentPage(token, assignment.start_page + position);
     }, 250);
   };
   onlineHandler = flushPending;
   hashChangeHandler = () => {
     if (location.hash !== `#/read/${assignmentId}`) cleanup();
   };
+  fullscreenHandler = updateFullscreenButton;
   window.addEventListener('resize', resizeHandler);
   window.addEventListener('online', onlineHandler);
   window.addEventListener('hashchange', hashChangeHandler);
+  document.addEventListener('fullscreenchange', fullscreenHandler);
 
   try {
     await load();
