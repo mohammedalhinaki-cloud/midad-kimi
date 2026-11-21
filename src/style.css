@@ -216,7 +216,15 @@ p { margin: 6px 0; }
 .reader-canvas-box { width: 100%; background: #111; border-radius: var(--radius); overflow: hidden; }
 .reader-canvas-box canvas { display: block; width: 100%; height: auto; background: #fff; }
 .reader-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
-.reader-timer { min-width: 100%; text-align: center; }
+.reader-actions { gap: 6px; }
+.reader-page:fullscreen { width: 100%; height: 100%; min-height: 100%; overflow-y: auto; background: var(--bg); }
+.reader-page:fullscreen .reader-wrap { min-height: 100%; padding: 12px; }
+body.reader-fallback-fullscreen { overflow: hidden; }
+body.reader-fallback-fullscreen .topbar { display: none !important; }
+body.reader-fallback-fullscreen .reader-page {
+  position: fixed; inset: 0; z-index: 1001; width: 100vw; height: 100vh; height: 100dvh;
+  overflow-y: auto; background: var(--bg);
+}
 @media (max-width: 600px) { .reader-wrap { padding: 8px; } }
 .reader-msg {
   background: #fff7e6; border: 1px solid var(--gold); color: #7a5b12;
