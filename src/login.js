@@ -4,7 +4,8 @@ export function renderLogin(root) {
   root.innerHTML = `
     <div class="login-wrap">
       <div class="card login-card">
-        <div class="center" style="margin-bottom:14px">
+        <div class="center login-brand" style="margin-bottom:14px">
+          <img src="./midad-logo.png" alt="" width="72" height="72" />
           <h1 style="margin-bottom:2px">مِداد</h1>
           <p class="muted small" style="margin:0">قليلٌ دائم.. يصنع عالِماً.</p>
         </div>

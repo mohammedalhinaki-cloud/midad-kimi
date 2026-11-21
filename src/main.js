@@ -44,7 +44,10 @@ function renderShell(active) {
   app.innerHTML = `
     <header class="topbar">
       <div class="topbar-inner">
-        <div class="brand">مِداد<small>قليلٌ دائم.. يصنع عالِماً.</small></div>
+        <div class="brand brand-lockup">
+          <img src="./midad-logo.png" alt="" width="40" height="40" />
+          <span>مِداد<small>قليلٌ دائم.. يصنع عالِماً.</small></span>
+        </div>
         <div class="row">
           <span class="small muted">${p.full_name}</span>
           <button type="button" class="btn btn-sm" id="logout-btn">تسجيل الخروج</button>
@@ -80,7 +83,10 @@ function renderBlocked() {
   });
 }
 
+let routeRequestId = 0;
+
 export async function route() {
+  const requestId = ++routeRequestId;
   const hash = location.hash.replace(/^#/, '') || '/';
   const parts = hash.split('/').filter(Boolean);
 
@@ -90,8 +96,10 @@ export async function route() {
   }
 
   state.profile = await loadProfile();
+  if (requestId !== routeRequestId) return;
   if (!state.profile) {
     await supabase.auth.signOut();
+    if (requestId !== routeRequestId) return;
     state.user = null;
     renderLogin(app);
     return;
@@ -144,19 +152,75 @@ export async function route() {
   }
 }
 
+let appListenersBound = false;
+
 async function init() {
   const { data: { session } } = await supabase.auth.getSession();
   state.user = session?.user || null;
-  supabase.auth.onAuthStateChange((event, sess) => {
-    state.user = sess?.user || null;
-    // TOKEN_REFRESHED fires periodically; rerendering the whole app here wiped
-    // unsaved book forms while their owner was uploading a PDF.
-    if (['SIGNED_IN', 'SIGNED_OUT', 'USER_UPDATED', 'PASSWORD_RECOVERY', 'MFA_CHALLENGE_VERIFIED'].includes(event)) {
-      route();
-    }
-  });
-  window.addEventListener('hashchange', route);
-  route();
+  if (!appListenersBound) {
+    supabase.auth.onAuthStateChange((event, sess) => {
+      const previousUserId = state.user?.id || null;
+      const nextUser = sess?.user || null;
+      const nextUserId = nextUser?.id || null;
+      state.user = nextUser;
+
+      // Ignore duplicate sign-in notifications for the same session; they can
+      // otherwise redraw the whole view and look like an unsolicited refresh.
+      if (event === 'SIGNED_IN' && previousUserId === nextUserId) return;
+      if (event === 'SIGNED_OUT' && previousUserId === null && nextUserId === null) return;
+      if (['SIGNED_IN', 'SIGNED_OUT', 'USER_UPDATED', 'PASSWORD_RECOVERY', 'MFA_CHALLENGE_VERIFIED'].includes(event)) {
+        void route();
+      }
+    });
+    window.addEventListener('hashchange', () => { void route(); });
+    appListenersBound = true;
+  }
+  await route();
 }
 
-init();
+const introScreen = document.getElementById('intro-screen');
+const launchButton = document.getElementById('launch-button');
+const introError = document.getElementById('intro-error');
+let appStarted = false;
+
+function revealLaunchButton() {
+  if (!launchButton) return;
+  launchButton.hidden = false;
+  requestAnimationFrame(() => launchButton.classList.add('is-ready'));
+}
+
+if (introScreen && launchButton) {
+  const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+  if (reduceMotion) revealLaunchButton();
+  else window.setTimeout(revealLaunchButton, 1750);
+
+  launchButton.addEventListener('click', async () => {
+    if (appStarted) return;
+    appStarted = true;
+    launchButton.disabled = true;
+    launchButton.querySelector('.launch-button-label').textContent = 'جارٍ فتح مِداد…';
+    if (introError) introError.hidden = true;
+
+    try {
+      await init();
+      app.hidden = false;
+      app.removeAttribute('aria-hidden');
+      document.body.classList.remove('intro-active');
+      introScreen.classList.add('is-exiting');
+      window.setTimeout(() => introScreen.remove(), 560);
+    } catch (error) {
+      appStarted = false;
+      launchButton.disabled = false;
+      launchButton.querySelector('.launch-button-label').textContent = 'انطلق';
+      if (introError) {
+        introError.textContent = 'تعذر فتح مِداد الآن. تحقق من الاتصال ثم حاول مرة أخرى.';
+        introError.hidden = false;
+      }
+      console.error('[مِداد] تعذر بدء التطبيق:', error);
+    }
+  });
+} else {
+  app.hidden = false;
+  app.removeAttribute('aria-hidden');
+  void init();
+}

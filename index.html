@@ -4,13 +4,61 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>مِداد — قليلٌ دائم.. يصنع عالِماً.</title>
-  <meta name="description" content="مِداد — منصة إدارة مجموعات القراءة" />
+  <meta name="description" content="مِداد — منصة عربية للقراءة الجماعية. قليلٌ دائم.. يصنع عالِماً." />
+  <meta name="theme-color" content="#123e36" />
+  <link rel="canonical" href="https://mohammedalhinaki-cloud.github.io/midad-kimi/" />
+  <link rel="icon" type="image/png" sizes="64x64" href="./favicon.png" />
+  <link rel="shortcut icon" type="image/x-icon" href="./favicon.ico" />
+  <link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png" />
+  <link rel="preload" as="image" href="./midad-logo.png" type="image/png" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="مِداد" />
+  <meta property="og:locale" content="ar_SA" />
+  <meta property="og:url" content="https://mohammedalhinaki-cloud.github.io/midad-kimi/" />
+  <meta property="og:title" content="مِداد — قليلٌ دائم.. يصنع عالِماً." />
+  <meta property="og:description" content="مساحة عربية للقراءة الجماعية؛ نقرأ قليلاً كل يوم ونصنع أثراً يدوم." />
+  <meta property="og:image" content="https://mohammedalhinaki-cloud.github.io/midad-kimi/og-image.png" />
+  <meta property="og:image:secure_url" content="https://mohammedalhinaki-cloud.github.io/midad-kimi/og-image.png" />
+  <meta property="og:image:type" content="image/png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="شعار مِداد: كتاب مفتوح وريشة كتابة بلوني الأخضر والذهبي" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="مِداد — قليلٌ دائم.. يصنع عالِماً." />
+  <meta name="twitter:description" content="مساحة عربية للقراءة الجماعية؛ نقرأ قليلاً كل يوم ونصنع أثراً يدوم." />
+  <meta name="twitter:image" content="https://mohammedalhinaki-cloud.github.io/midad-kimi/og-image.png" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&display=swap" rel="stylesheet" />
 </head>
-<body>
-  <div id="app"></div>
+<body class="intro-active">
+  <section class="intro-screen" id="intro-screen" aria-labelledby="intro-title">
+    <div class="intro-orbit intro-orbit-one" aria-hidden="true"></div>
+    <div class="intro-orbit intro-orbit-two" aria-hidden="true"></div>
+    <div class="intro-spark intro-spark-one" aria-hidden="true"></div>
+    <div class="intro-spark intro-spark-two" aria-hidden="true"></div>
+    <div class="intro-content">
+      <div class="intro-emblem">
+        <span class="intro-emblem-glow" aria-hidden="true"></span>
+        <img class="intro-logo" src="./midad-logo.png" alt="" width="512" height="512" fetchpriority="high" />
+      </div>
+      <p class="intro-eyebrow">مجتمعٌ للقراءة والمعرفة</p>
+      <h1 class="intro-title" id="intro-title">مِداد</h1>
+      <p class="intro-tagline">قليلٌ دائم.. يصنع عالِماً.</p>
+      <span class="intro-divider" aria-hidden="true"></span>
+      <button type="button" class="launch-button" id="launch-button" hidden>
+        <span class="launch-button-label">انطلق</span>
+        <span class="launch-button-arrow" aria-hidden="true">←</span>
+      </button>
+      <p class="intro-error" id="intro-error" role="status" aria-live="polite" hidden></p>
+    </div>
+    <div class="intro-footer" aria-hidden="true">
+      <span class="intro-footer-mark"></span>
+      <span>نقرأ اليوم.. ونترك أثراً يدوم</span>
+      <span class="intro-footer-mark"></span>
+    </div>
+  </section>
+  <div id="app" hidden aria-hidden="true"></div>
   <script type="module" src="/src/main.js"></script>
 </body>
 </html>
