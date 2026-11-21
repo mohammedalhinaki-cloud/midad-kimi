@@ -14,7 +14,10 @@ function setPending(value) {
   try { value ? localStorage.setItem(PENDING_KEY, JSON.stringify(value)) : localStorage.removeItem(PENDING_KEY); } catch { /* ignore */ }
 }
 
-export async function renderReader(view, assignmentId) {
+export async function renderReader(view, assignmentId, { homePath = '#/member', historyPath = '#/member/history' } = {}) {
+  const completionLinks = historyPath === homePath
+    ? `<p><a href="${homePath}">العودة إلى مساحة القراءة وسجلي</a></p>`
+    : `<p><a href="${homePath}">العودة للرئيسية</a> · <a href="${historyPath}">سجل قراءتي</a></p>`;
   view.innerHTML = '<p class="muted center">جارٍ تحميل القارئ…</p>';
   let pdf = null;
   let assignment = null;
@@ -131,7 +134,7 @@ export async function renderReader(view, assignmentId) {
             <button type="button" class="btn btn-sm" id="fullscreen-btn" aria-pressed="false">
               <span aria-hidden="true">⛶</span><span class="fullscreen-label">ملء الشاشة</span>
             </button>
-            <a class="btn btn-sm" href="#/member">رجوع</a>
+            <a class="btn btn-sm" href="${homePath}">رجوع</a>
           </div>
         </div>
         <div class="reader-canvas-box" id="canvas-box" style="margin-top:10px">
@@ -352,7 +355,7 @@ export async function renderReader(view, assignmentId) {
             ${data?.counts
               ? '<div class="success-box">تم تسجيل قراءة اليوم بنجاح.</div>'
               : '<div class="success-box" style="background:#fff7e6;border-color:var(--gold);color:#7a5b12">تمت القراءة بعد انتهاء المهلة — لم تُحتسب ضمن قراءة اليوم.</div>'}
-            <p><a href="#/member">العودة للرئيسية</a> · <a href="#/member/history">سجل قراءتي</a></p>
+            ${completionLinks}
           </div>
         </div>`;
     } catch (error) {
@@ -368,7 +371,7 @@ export async function renderReader(view, assignmentId) {
               <div class="card center">
                 <div class="reader-msg">${escapeHtml(retryMessage)}</div>
                 <button type="button" class="btn btn-primary" id="finish-retry">إعادة المحاولة</button>
-                <p><a href="#/member">العودة للرئيسية</a></p>
+                <p><a href="${homePath}">العودة للرئيسية</a></p>
               </div>
             </div>`;
           view.querySelector('#finish-retry').addEventListener('click', () => void finishReading());
@@ -467,7 +470,7 @@ export async function renderReader(view, assignmentId) {
     if (!disposed) void flushPending();
   } catch (error) {
     if (!disposed) {
-      view.innerHTML = `<div class="card center"><p>تعذر فتح القارئ: ${escapeHtml(error.message)}</p><p><a href="#/member">رجوع</a></p></div>`;
+      view.innerHTML = `<div class="card center"><p>تعذر فتح القارئ: ${escapeHtml(error.message)}</p><p><a href="${homePath}">رجوع</a></p></div>`;
     }
   }
 }
