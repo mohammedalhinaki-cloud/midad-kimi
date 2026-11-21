@@ -40,6 +40,7 @@ function renderShell(active) {
       <a href="#/admin/reports" class="${active === 'reports' ? 'active' : ''}">التقارير</a>
       <a href="#/super/logs" class="${active === 'logs' ? 'active' : ''}">سجل النشاط</a>`;
   }
+  const viewClass = active === 'read' ? 'reader-page' : 'container';
   app.innerHTML = `
     <header class="topbar">
       <div class="topbar-inner">
@@ -51,7 +52,7 @@ function renderShell(active) {
       </div>
       <nav class="nav">${nav}</nav>
     </header>
-    <main class="container" id="view"></main>`;
+    <main class="${viewClass}" id="view"></main>`;
   document.getElementById('logout-btn').addEventListener('click', async () => {
     await supabase.auth.signOut();
     state.user = null; state.profile = null;

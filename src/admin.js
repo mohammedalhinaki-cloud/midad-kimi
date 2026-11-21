@@ -458,20 +458,21 @@ export async function renderBooks(view) {
         <div id="ov-status" class="small" style="margin-bottom:8px"></div>
         <div class="page-grid" id="ov-grid"></div>
         <div class="row" style="margin-top:12px">
-          <button type="button" class="btn btn-primary" id="ov-publish">نشر القراءة</button>
+          <button type="button" class="btn btn-primary" id="ov-open-publish" aria-expanded="false" aria-controls="ov-publish-options">نشر القراءة</button>
           <button type="button" class="btn" id="ov-clear">مسح التحديد</button>
         </div>
 
-        <details class="compact-disclosure">
-          <summary><span>معلومات إضافية للمنشور</span><span class="small muted">اختيارية</span></summary>
-          <div class="disclosure-body">
+        <div id="ov-publish-options" hidden>
+          <div class="publication-options">
+            <h3>معلومات إضافية للمنشور</h3>
             <div class="field"><label>رقم مقدار اليوم</label>
               <input class="input" id="ov-day-number" type="number" min="1" step="1" value="1" />
               <p class="small muted" id="ov-next-day-hint"></p></div>
             <div class="field"><label>من قوله (اختياري)</label><input class="input" id="ov-from-quote" /></div>
             <div class="field"><label>إلى قوله (اختياري)</label><input class="input" id="ov-to-quote" /></div>
+            <button type="button" class="btn btn-primary btn-block" id="ov-publish">نشر القراءة</button>
           </div>
-        </details>
+        </div>
 
         <details class="compact-disclosure">
           <summary><span>لا يوجد قراءة لهذا اليوم</span><span class="small muted" id="nr-status">إعداد اختياري</span></summary>
@@ -734,6 +735,8 @@ async function setupPagePicker(view, book) {
   const dayNumberHint = view.querySelector('#ov-next-day-hint');
   const fromQuoteInput = view.querySelector('#ov-from-quote');
   const toQuoteInput = view.querySelector('#ov-to-quote');
+  const openPublishButton = view.querySelector('#ov-open-publish');
+  const publishOptions = view.querySelector('#ov-publish-options');
   const noReadingInput = view.querySelector('#nr-check');
   const noReadingReasonInput = view.querySelector('#nr-reason');
   const noReadingStatus = view.querySelector('#nr-status');
@@ -887,6 +890,11 @@ async function setupPagePicker(view, book) {
 
   dateInput.addEventListener('change', () => refresh().catch((error) => toast('تعذر تحميل تخصيص التاريخ: ' + error.message, 'error')));
   dayNumberInput.addEventListener('input', updateDayNumberHint);
+  openPublishButton.addEventListener('click', () => {
+    publishOptions.hidden = false;
+    openPublishButton.setAttribute('aria-expanded', 'true');
+    publishOptions.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  });
   view.querySelector('#ov-clear').addEventListener('click', () => {
     selStart = null;
     selEnd = null;

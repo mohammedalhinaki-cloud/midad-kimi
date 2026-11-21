@@ -1,18 +1,17 @@
 import * as pdfjsLib from 'pdfjs-dist';
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
-import { supabase, toast, escapeHtml } from './lib.js';
-import { state } from './main.js';
+import { supabase, toast, escapeHtml, toArabicDigits } from './lib.js';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
 
-const TOO_FAST_MSG = 'صايدينك! 🧐 ما شاء الله تقرأ بسرعة الضوء؟ ارجع كمّل الصفحة لا تتحمس';
+const TOO_FAST_MSG = 'لم يكتمل وقت هذه الصفحة بعد. ابقَ عليها حتى ينتهي العداد؛ ستبقى في الصفحة نفسها.';
 const PENDING_KEY = 'midad_pending_confirm';
 
 function getPending() {
   try { return JSON.parse(localStorage.getItem(PENDING_KEY) || 'null'); } catch { return null; }
 }
-function setPending(v) {
-  try { v ? localStorage.setItem(PENDING_KEY, JSON.stringify(v)) : localStorage.removeItem(PENDING_KEY); } catch { /* ignore */ }
+function setPending(value) {
+  try { value ? localStorage.setItem(PENDING_KEY, JSON.stringify(value)) : localStorage.removeItem(PENDING_KEY); } catch { /* ignore */ }
 }
 
 export async function renderReader(view, assignmentId) {
@@ -22,106 +21,41 @@ export async function renderReader(view, assignmentId) {
   let book = null;
   let session = null;
   let minSeconds = 60;
-  let position = 0;       // index of the page currently displayed (0-based within assignment)
-  let pageShownAt = Date.now();
-  let rendering = false;
+  let position = 0;
+  let pageShownAt = 0;
+  let pageReady = false;
+  let navigationInFlight = false;
+  let finishing = false;
+  let disposed = false;
+  let renderVersion = 0;
+  let renderTask = null;
+  let pageTimer = null;
+  let resizeTimer = null;
+  let resizeHandler = null;
+  let onlineHandler = null;
+  let hashChangeHandler = null;
 
   const total = () => assignment.end_page - assignment.start_page + 1;
 
-  async function load() {
-    const [aRes, sRes] = await Promise.all([
-      supabase.from('assignments').select('*').eq('id', assignmentId).single(),
-      supabase.rpc('start_or_get_session', { p_assignment_id: assignmentId })
-    ]);
-    if (aRes.error) throw aRes.error;
-    if (sRes.error) throw sRes.error;
-    assignment = aRes.data;
-    session = sRes.data;
-    position = Math.min(session.current_position, total() - 1);
-
-    const bRes = await supabase.from('books').select('*').eq('id', assignment.book_id).single();
-    if (bRes.error) throw bRes.error;
-    book = bRes.data;
-
-    const setRes = await supabase.from('app_settings').select('min_page_seconds').eq('id', 1).maybeSingle();
-    if (setRes.data) minSeconds = setRes.data.min_page_seconds;
-
-    const { data: signed, error: signErr } = await supabase.storage
-      .from('books').createSignedUrl(book.storage_path, 3600);
-    if (signErr || !signed?.signedUrl) throw new Error('تعذر فتح ملف الكتاب');
-
-    pdf = await pdfjsLib.getDocument({ url: signed.signedUrl }).promise;
-    draw();
+  function clearPageTimer() {
+    if (pageTimer) clearInterval(pageTimer);
+    pageTimer = null;
   }
 
-  function draw() {
-    const pdfPage = assignment.start_page + position;
-    const remaining = total() - session.current_position;
-    view.innerHTML = `
-      <div class="reader-wrap">
-        <div class="row-between">
-          <div>
-            <strong>${escapeHtml(book.title)}</strong>
-            <div class="small muted">
-              صفحة PDF ${pdfPage} · التقدم: ${session.current_position} من ${total()}
-            </div>
-          </div>
-          <a class="btn btn-sm" href="#/member">رجوع</a>
-        </div>
-        <div class="reader-canvas-box" id="canvas-box" style="margin-top:10px">
-          <canvas id="page-canvas"></canvas>
-        </div>
-        <div id="reader-msg"></div>
-        <div class="reader-bar">
-          <button type="button" class="btn" id="prev-btn" ${position === 0 ? 'disabled' : ''}>السابق</button>
-          <span class="small muted">المتبقي: ${remaining} ${remaining === 1 ? 'صفحة' : 'صفحات'}</span>
-          <button type="button" class="btn btn-primary" id="next-btn">${position === total() - 1 ? 'إنهاء القراءة' : 'التالي'}</button>
-        </div>
-      </div>`;
-
-    renderCurrentPage();
-    pageShownAt = Date.now();
-
-    view.querySelector('#prev-btn').addEventListener('click', () => {
-      if (position > 0) { position -= 1; draw(); }
-    });
-    view.querySelector('#next-btn').addEventListener('click', onNext);
-
-    // Swipe navigation (mobile)
-    const box = view.querySelector('#canvas-box');
-    let touchX = null;
-    box.addEventListener('touchstart', (e) => { touchX = e.changedTouches[0].clientX; }, { passive: true });
-    box.addEventListener('touchend', (e) => {
-      if (touchX == null) return;
-      const dx = e.changedTouches[0].clientX - touchX;
-      touchX = null;
-      if (Math.abs(dx) < 50) return;
-      // RTL: swipe left = next, swipe right = previous
-      if (dx < 0 && position < total() - 1) onNext();
-      else if (dx > 0 && position > 0) { position -= 1; draw(); }
-    }, { passive: true });
-  }
-
-  async function renderCurrentPage() {
-    if (rendering) return;
-    rendering = true;
+  function cleanup() {
+    if (disposed) return;
+    disposed = true;
+    clearPageTimer();
+    if (resizeTimer) clearTimeout(resizeTimer);
+    try { renderTask?.cancel(); } catch { /* render may already have completed */ }
+    renderTask = null;
     try {
-      const canvas = view.querySelector('#page-canvas');
-      if (!canvas) return;
-      const pdfPage = assignment.start_page + position;
-      const page = await pdf.getPage(pdfPage);
-      const boxWidth = canvas.parentElement.clientWidth || window.innerWidth - 24;
-      const base = page.getViewport({ scale: 1 });
-      const scale = boxWidth / base.width;
-      const viewport = page.getViewport({ scale });
-      canvas.width = Math.floor(viewport.width);
-      canvas.height = Math.floor(viewport.height);
-      await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
-    } catch (e) {
-      toast('تعذر عرض الصفحة: ' + e.message, 'error');
-    } finally {
-      rendering = false;
-    }
+      const destroyPromise = pdf?.destroy?.();
+      if (destroyPromise?.catch) destroyPromise.catch(() => {});
+    } catch { /* PDF teardown is best effort */ }
+    if (resizeHandler) window.removeEventListener('resize', resizeHandler);
+    if (onlineHandler) window.removeEventListener('online', onlineHandler);
+    if (hashChangeHandler) window.removeEventListener('hashchange', hashChangeHandler);
   }
 
   function showMsg(text) {
@@ -129,70 +63,292 @@ export async function renderReader(view, assignmentId) {
     if (el) el.innerHTML = `<div class="reader-msg">${escapeHtml(text)}</div>`;
   }
 
+  function updateNextAvailability() {
+    const button = view.querySelector('#next-btn');
+    const hint = view.querySelector('#page-timer');
+    if (!button) return;
+    if (disposed || navigationInFlight) {
+      button.disabled = true;
+      return;
+    }
+    if (!pageReady) {
+      button.disabled = true;
+      if (hint) hint.textContent = 'جارٍ عرض الصفحة…';
+      return;
+    }
+    if (position < session.current_position) {
+      button.disabled = false;
+      if (hint) hint.textContent = '';
+      return;
+    }
+
+    const remaining = Math.max(0, minSeconds - (Date.now() - pageShownAt) / 1000);
+    const seconds = Math.ceil(remaining);
+    button.disabled = remaining > 0;
+    if (hint) hint.textContent = remaining > 0
+      ? `يمكن الانتقال بعد ${toArabicDigits(seconds)} ثانية`
+      : '';
+  }
+
+  function startPageTimer() {
+    clearPageTimer();
+    updateNextAvailability();
+    if (!pageReady || position < session.current_position || minSeconds <= 0) return;
+    pageTimer = setInterval(() => {
+      updateNextAvailability();
+      if (Date.now() - pageShownAt >= minSeconds * 1000) clearPageTimer();
+    }, 250);
+  }
+
+  function cancelRender() {
+    renderVersion += 1;
+    try { renderTask?.cancel(); } catch { /* ignore */ }
+    renderTask = null;
+    return renderVersion;
+  }
+
+  function draw({ resetPageTimer = true } = {}) {
+    if (disposed || !assignment || !book || !session) return;
+    const pageCount = total();
+    if (pageCount <= 0) return;
+    position = Math.max(0, Math.min(position, pageCount - 1));
+    const pdfPage = assignment.start_page + position;
+    const renderToken = cancelRender();
+    pageReady = false;
+    if (resetPageTimer) {
+      pageShownAt = 0;
+      clearPageTimer();
+    }
+
+    const remaining = Math.max(0, pageCount - session.current_position);
+    view.innerHTML = `
+      <div class="reader-wrap">
+        <div class="row-between">
+          <div>
+            <strong>${escapeHtml(book.title)}</strong>
+            <div class="small muted">
+              صفحة PDF ${toArabicDigits(pdfPage)} · التقدم: ${toArabicDigits(session.current_position)} من ${toArabicDigits(pageCount)}
+            </div>
+          </div>
+          <a class="btn btn-sm" href="#/member">رجوع</a>
+        </div>
+        <div class="reader-canvas-box" id="canvas-box" style="margin-top:10px">
+          <canvas id="page-canvas" aria-label="صفحة الكتاب ${toArabicDigits(pdfPage)}"></canvas>
+        </div>
+        <div id="reader-msg" aria-live="polite"></div>
+        <div class="reader-bar">
+          <button type="button" class="btn" id="prev-btn" ${position === 0 ? 'disabled' : ''}>السابق</button>
+          <span class="small muted">المتبقي: ${toArabicDigits(remaining)} ${remaining === 1 ? 'صفحة' : 'صفحات'}</span>
+          <button type="button" class="btn btn-primary" id="next-btn">${position === pageCount - 1 ? 'إنهاء القراءة' : 'التالي'}</button>
+          <span class="small muted reader-timer" id="page-timer" aria-live="polite"></span>
+        </div>
+      </div>`;
+
+    updateNextAvailability();
+    void renderCurrentPage(renderToken, pdfPage, resetPageTimer);
+
+    view.querySelector('#prev-btn').addEventListener('click', () => {
+      if (navigationInFlight || position <= 0) return;
+      position -= 1;
+      draw();
+    });
+    view.querySelector('#next-btn').addEventListener('click', onNext);
+
+    const box = view.querySelector('#canvas-box');
+    let touchX = null;
+    box.addEventListener('touchstart', (event) => {
+      touchX = event.changedTouches[0].clientX;
+    }, { passive: true });
+    box.addEventListener('touchend', (event) => {
+      if (touchX == null) return;
+      const deltaX = event.changedTouches[0].clientX - touchX;
+      touchX = null;
+      if (Math.abs(deltaX) < 50) return;
+      // RTL: swipe left = next, swipe right = previous.
+      if (deltaX < 0 && position < pageCount - 1) void onNext();
+      else if (deltaX > 0 && position > 0 && !navigationInFlight) {
+        position -= 1;
+        draw();
+      }
+    }, { passive: true });
+  }
+
+  async function renderCurrentPage(renderToken, pdfPageNumber, resetPageTimer = false) {
+    const canvas = view.querySelector('#page-canvas');
+    if (!canvas || !pdf || disposed) return;
+    try {
+      const page = await pdf.getPage(pdfPageNumber);
+      if (disposed || renderToken !== renderVersion || !canvas.isConnected) return;
+
+      const containerWidth = canvas.parentElement?.clientWidth || view.clientWidth || window.innerWidth;
+      const baseViewport = page.getViewport({ scale: 1 });
+      const viewport = page.getViewport({ scale: containerWidth / baseViewport.width });
+      const outputScale = Math.min(Math.max(window.devicePixelRatio || 1, 1), 2.5);
+      canvas.width = Math.max(1, Math.ceil(viewport.width * outputScale));
+      canvas.height = Math.max(1, Math.ceil(viewport.height * outputScale));
+      const canvasContext = canvas.getContext('2d', { alpha: false });
+      if (!canvasContext) throw new Error('تعذر تجهيز مساحة عرض الصفحة.');
+
+      const renderOptions = { canvasContext, viewport };
+      if (outputScale !== 1) renderOptions.transform = [outputScale, 0, 0, outputScale, 0, 0];
+      const currentTask = page.render(renderOptions);
+      renderTask = currentTask;
+      await currentTask.promise;
+      if (disposed || renderToken !== renderVersion || !canvas.isConnected) return;
+
+      if (resetPageTimer || !pageShownAt) pageShownAt = Date.now();
+      pageReady = true;
+      startPageTimer();
+    } catch (error) {
+      if (error?.name === 'RenderingCancelledException' || error?.name === 'AbortException') return;
+      if (!disposed && renderToken === renderVersion) {
+        pageReady = false;
+        showMsg('تعذر عرض الصفحة بوضوح: ' + (error?.message || 'حاول إعادة فتح القارئ.'));
+        updateNextAvailability();
+      }
+    } finally {
+      if (renderToken === renderVersion) renderTask = null;
+    }
+  }
+
+  async function load() {
+    const [assignmentResult, sessionResult] = await Promise.all([
+      supabase.from('assignments').select('*').eq('id', assignmentId).single(),
+      supabase.rpc('start_or_get_session', { p_assignment_id: assignmentId })
+    ]);
+    if (assignmentResult.error) throw assignmentResult.error;
+    if (sessionResult.error) throw sessionResult.error;
+    assignment = assignmentResult.data;
+    session = sessionResult.data;
+    if (disposed) return;
+
+    if (session.status === 'completed' || session.current_position >= total()) {
+      await finishReading();
+      return;
+    }
+
+    const bookResult = await supabase.from('books').select('*').eq('id', assignment.book_id).single();
+    if (bookResult.error) throw bookResult.error;
+    book = bookResult.data;
+
+    const settingsResult = await supabase.from('app_settings').select('min_page_seconds').eq('id', 1).maybeSingle();
+    if (settingsResult.data) minSeconds = Math.max(0, Number(settingsResult.data.min_page_seconds) || 0);
+
+    const { data: signed, error: signError } = await supabase.storage
+      .from('books').createSignedUrl(book.storage_path, 3600);
+    if (signError || !signed?.signedUrl) throw new Error('تعذر فتح ملف الكتاب');
+
+    pdf = await pdfjsLib.getDocument({ url: signed.signedUrl }).promise;
+    if (disposed) return;
+    position = session.current_position;
+    draw();
+  }
+
   async function confirmCurrentPage() {
-    // Server-side trusted verification: order + minimum duration via DB timestamps.
+    const confirmedPosition = position;
     const { data, error } = await supabase.rpc('confirm_page_view', {
-      p_session_id: session.id, p_position: position
+      p_session_id: session.id,
+      p_position: confirmedPosition
     });
     if (error) throw error;
     return data;
   }
 
-  async function onNext() {
-    const btn = view.querySelector('#next-btn');
-    if (!btn || btn.disabled) return;
+  async function syncSessionFromServer() {
+    const { data: freshSession, error } = await supabase.from('reading_sessions')
+      .select('*').eq('id', session.id).single();
+    if (error) throw error;
+    if (!freshSession) throw new Error('تعذر مزامنة تقدم القراءة.');
+    session = freshSession;
 
-    // Already-confirmed page: just move forward without re-confirming.
+    const pending = getPending();
+    if (pending?.session_id === session.id && session.current_position > pending.position) setPending(null);
+    if (session.status === 'completed' || session.current_position >= total()) {
+      await finishReading();
+      return;
+    }
+    // Always resume at the server's next unconfirmed page. Never draw an older
+    // page after a stale/wrong-order response.
+    position = session.current_position;
+    draw();
+  }
+
+  async function onNext() {
+    const button = view.querySelector('#next-btn');
+    if (!button || button.disabled || navigationInFlight || disposed || !pageReady) return;
+    if (session.status === 'completed' || session.current_position >= total()) {
+      await finishReading();
+      return;
+    }
+
+    // Moving through a page that the server already confirmed needs no new RPC.
     if (position < session.current_position) {
       position += 1;
       draw();
       return;
     }
+    if (position > session.current_position) {
+      try { await syncSessionFromServer(); }
+      catch (error) { toast('تعذر مزامنة التقدم: ' + error.message, 'error'); }
+      return;
+    }
 
-    // Local pre-check so the message appears immediately; the server re-verifies.
-    const elapsed = (Date.now() - pageShownAt) / 1000;
-    if (elapsed < minSeconds) {
+    if ((Date.now() - pageShownAt) / 1000 < minSeconds) {
+      updateNextAvailability();
       showMsg(TOO_FAST_MSG);
       return;
     }
 
-    btn.disabled = true;
+    navigationInFlight = true;
+    updateNextAvailability();
     try {
-      await confirmCurrentPage();
+      const confirmation = await confirmCurrentPage();
+      if (disposed) return;
+      const confirmed = Number(confirmation?.confirmed);
+      if (!Number.isInteger(confirmed) || confirmed !== session.current_position + 1 || confirmed > total()) {
+        await syncSessionFromServer();
+        return;
+      }
       setPending(null);
-      session.current_position += 1;
-      await supabase.from('reading_sessions').update({ last_activity_at: new Date().toISOString() }).eq('id', session.id);
+      session.current_position = confirmed;
       if (session.current_position >= total()) {
         await finishReading();
         return;
       }
-      position += 1;
+      position = session.current_position;
       draw();
-    } catch (e) {
-      const msg = String(e.message || '');
-      if (msg.includes('too_fast')) {
+    } catch (error) {
+      if (disposed) return;
+      const message = String(error?.message || '');
+      if (message.includes('too_fast')) {
+        // Keep the same page visible and wait again; a rejected confirmation
+        // must not reset or move the reader to an earlier page.
+        pageShownAt = Date.now();
         showMsg(TOO_FAST_MSG);
-      } else if (msg.includes('wrong_order') || msg.includes('already_finished')) {
-        // Re-sync with server state (e.g. after offline queue flush)
-        const { data: fresh } = await supabase.from('reading_sessions').select('*').eq('id', session.id).single();
-        if (fresh) session = fresh;
-        draw();
-      } else if (!navigator.onLine || msg.includes('Failed to fetch') || msg.includes('NetworkError')) {
-        // Offline: keep pending progress locally; it is NOT counted until the server confirms it.
+        startPageTimer();
+      } else if (message.includes('wrong_order') || message.includes('already_finished') || message.includes('already_completed')) {
+        try { await syncSessionFromServer(); }
+        catch (syncError) { toast('تعذر مزامنة التقدم: ' + syncError.message, 'error'); }
+      } else if (!navigator.onLine || message.includes('Failed to fetch') || message.includes('NetworkError')) {
         setPending({ session_id: session.id, position });
-        showMsg('انقطع الاتصال — سيتم حفظ تقدمك ومزامنته عند عودة الاتصال.');
+        showMsg('انقطع الاتصال. ستبقى في هذه الصفحة، وسيُزامن التقدم عند عودة الاتصال.');
       } else {
-        toast('تعذر الحفظ: ' + msg, 'error');
+        toast('تعذر حفظ الصفحة: ' + message, 'error');
       }
-      btn.disabled = false;
+    } finally {
+      navigationInFlight = false;
+      if (!disposed) updateNextAvailability();
     }
   }
 
   async function finishReading() {
+    if (disposed || finishing) return;
+    finishing = true;
     try {
       const { data, error } = await supabase.rpc('complete_reading', { p_session_id: session.id });
       if (error) throw error;
       setPending(null);
+      cleanup();
       view.innerHTML = `
         <div class="reader-wrap">
           <div class="card center">
@@ -202,36 +358,109 @@ export async function renderReader(view, assignmentId) {
             <p><a href="#/member">العودة للرئيسية</a> · <a href="#/member/history">سجل قراءتي</a></p>
           </div>
         </div>`;
-    } catch (e) {
-      toast('تعذر إنهاء القراءة: ' + e.message, 'error');
+    } catch (error) {
+      if (!disposed) {
+        const retryMessage = 'اكتملت الصفحات، لكن تعذر تسجيل إنهاء القراءة. تقدمك محفوظ؛ أعد المحاولة.';
+        const nextButton = view.querySelector('#next-btn');
+        if (nextButton) {
+          showMsg(retryMessage);
+          nextButton.textContent = 'إعادة المحاولة';
+        } else {
+          view.innerHTML = `
+            <div class="reader-wrap">
+              <div class="card center">
+                <div class="reader-msg">${escapeHtml(retryMessage)}</div>
+                <button type="button" class="btn btn-primary" id="finish-retry">إعادة المحاولة</button>
+                <p><a href="#/member">العودة للرئيسية</a></p>
+              </div>
+            </div>`;
+          view.querySelector('#finish-retry').addEventListener('click', () => void finishReading());
+        }
+        toast('تعذر إنهاء القراءة: ' + error.message, 'error');
+      }
+    } finally {
+      finishing = false;
     }
   }
 
-  // Flush any locally-pending confirmation when connectivity returns.
   async function flushPending() {
-    const p = getPending();
-    if (!p || !navigator.onLine) return;
+    const pending = getPending();
+    if (!pending || !navigator.onLine || disposed || navigationInFlight) return;
+    navigationInFlight = true;
+    updateNextAvailability();
     try {
-      const { error } = await supabase.rpc('confirm_page_view', { p_session_id: p.session_id, p_position: p.position });
-      if (!error) {
-        setPending(null);
-        toast('تمت مزامنة تقدمك المحفوظ', 'ok');
+      const { data, error } = await supabase.rpc('confirm_page_view', {
+        p_session_id: pending.session_id,
+        p_position: pending.position
+      });
+      let confirmed = !error;
+      let freshSession = null;
+      if (error && ['wrong_order', 'already_finished', 'already_completed'].some((code) => String(error.message || '').includes(code))) {
+        const result = await supabase.from('reading_sessions').select('*').eq('id', pending.session_id).single();
+        freshSession = result.data;
+        confirmed = Boolean(freshSession && freshSession.current_position > pending.position);
       }
-    } catch { /* retry later */ }
+      if (!confirmed) return;
+      setPending(null);
+      if (session?.id === pending.session_id) {
+        if (!freshSession) {
+          const result = await supabase.from('reading_sessions').select('*').eq('id', session.id).single();
+          freshSession = result.data;
+        }
+        if (freshSession) {
+          session = freshSession;
+          if (session.status === 'completed' || session.current_position >= total()) {
+            await finishReading();
+            return;
+          }
+          position = session.current_position;
+          draw();
+        } else {
+          const confirmedPosition = Number(data?.confirmed);
+          if (Number.isInteger(confirmedPosition) && confirmedPosition === pending.position + 1
+            && confirmedPosition <= total()) {
+            session.current_position = Math.max(session.current_position, confirmedPosition);
+            if (session.current_position >= total()) {
+              await finishReading();
+              return;
+            }
+            position = session.current_position;
+            draw();
+          }
+        }
+      }
+      toast('تمت مزامنة تقدمك المحفوظ', 'ok');
+    } catch { /* try again when connectivity returns */ }
+    finally {
+      navigationInFlight = false;
+      if (!disposed) updateNextAvailability();
+    }
   }
-  window.addEventListener('online', flushPending);
 
-  // Re-render on resize for crisp pages
-  let resizeTimer = null;
-  window.addEventListener('resize', () => {
-    clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(renderCurrentPage, 250);
-  });
+  resizeHandler = () => {
+    if (resizeTimer) clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      if (disposed || !pdf || !view.querySelector('#page-canvas')) return;
+      const token = cancelRender();
+      pageReady = false;
+      updateNextAvailability();
+      void renderCurrentPage(token, assignment.start_page + position, false);
+    }, 250);
+  };
+  onlineHandler = flushPending;
+  hashChangeHandler = () => {
+    if (location.hash !== `#/read/${assignmentId}`) cleanup();
+  };
+  window.addEventListener('resize', resizeHandler);
+  window.addEventListener('online', onlineHandler);
+  window.addEventListener('hashchange', hashChangeHandler);
 
   try {
     await load();
-    flushPending();
-  } catch (e) {
-    view.innerHTML = `<div class="card center"><p>تعذر فتح القارئ: ${escapeHtml(e.message)}</p><p><a href="#/member">رجوع</a></p></div>`;
+    if (!disposed) void flushPending();
+  } catch (error) {
+    if (!disposed) {
+      view.innerHTML = `<div class="card center"><p>تعذر فتح القارئ: ${escapeHtml(error.message)}</p><p><a href="#/member">رجوع</a></p></div>`;
+    }
   }
 }
