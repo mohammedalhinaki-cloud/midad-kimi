@@ -1,6 +1,6 @@
 import * as pdfjsLib from 'pdfjs-dist';
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
-import { supabase, toast, escapeHtml, printedPage } from './lib.js';
+import { supabase, toast, escapeHtml } from './lib.js';
 import { state } from './main.js';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
@@ -56,7 +56,6 @@ export async function renderReader(view, assignmentId) {
 
   function draw() {
     const pdfPage = assignment.start_page + position;
-    const printed = printedPage(book, pdfPage);
     const remaining = total() - session.current_position;
     view.innerHTML = `
       <div class="reader-wrap">
@@ -64,8 +63,7 @@ export async function renderReader(view, assignmentId) {
           <div>
             <strong>${escapeHtml(book.title)}</strong>
             <div class="small muted">
-              صفحة ${pdfPage} من الكتاب${printed != null ? ` (صفحة PDF ${pdfPage} — مطبوعة ${printed})` : ''}
-              · التقدم: ${session.current_position} من ${total()}
+              صفحة PDF ${pdfPage} · التقدم: ${session.current_position} من ${total()}
             </div>
           </div>
           <a class="btn btn-sm" href="#/member">رجوع</a>
