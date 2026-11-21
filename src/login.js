@@ -141,7 +141,7 @@ function renderBootstrap(root) {
       const msg = err.message === 'bootstrap_disabled'
         ? 'تمت تهيئة النظام مسبقًا — لا يمكن إنشاء حساب مشرف أول جديد.'
         : err.message;
-      const diagnosticLink = err.code === 'manage_users_fetch'
+      const diagnosticLink = ['manage_users_fetch', 'manage_users_backend'].includes(err.code)
         ? `<p class="small" style="margin:10px 0 0">لفحص وصول المتصفح إلى Supabase، افتح <a href="${escapeHtml(`${SUPABASE_URL}/functions/v1/manage-users`)}" target="_blank" rel="noopener noreferrer">فحص الاتصال</a>. ينبغي أن تظهر نتيجة JSON فيها <code>ok: true</code>.</p>`
         : '';
       errBox.innerHTML = `<div class="error-box">${escapeHtml(msg)}${diagnosticLink}</div>`;

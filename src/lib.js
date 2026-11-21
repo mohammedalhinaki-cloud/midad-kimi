@@ -152,11 +152,24 @@ export async function callManageUsers(action, payload = {}) {
     }
 
     let msg = error.message || 'تعذر تنفيذ العملية';
+    let diagnosticCode = null;
     try {
       const ctx = await error.context.json();
       if (ctx?.error) msg = ctx.error;
+      if (ctx?.reason) {
+        const labels = {
+          service_key_rejected: 'رفض Supabase مفتاح خدمة الحسابات',
+          database_permission_denied: 'صلاحية قراءة قاعدة البيانات مرفوضة',
+          rest_endpoint_not_found: 'مسار REST غير موجود',
+          database_api_error: 'فشل استعلام قاعدة البيانات'
+        };
+        msg = `${labels[ctx.reason] || 'فشل فحص قاعدة البيانات'}${ctx.upstream_status ? ` (HTTP ${ctx.upstream_status})` : ''}`;
+        diagnosticCode = 'manage_users_backend';
+      }
     } catch { /* keep default message */ }
-    throw new Error(msg);
+    const operationError = new Error(msg);
+    if (diagnosticCode) operationError.code = diagnosticCode;
+    throw operationError;
   }
   if (data?.error) throw new Error(data.error);
   return data;
