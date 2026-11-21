@@ -2,9 +2,10 @@ import * as pdfjsLib from 'pdfjs-dist';
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import {
   supabase, callManageUsers, logActivity, fetchActiveBook, fetchMembers, fetchAllAssignments,
-  fetchCompletions, fetchLeaves, fetchSessions, riyadhToday, riyadhMidnightISO, addDays,
-  formatHijri, formatHijriTime, formatTime, isOnLeave, memberDayStatus, consecutiveAbsence,
-  commitmentStats, normalizeSaudiPhone, normalizePin, escapeHtml, toast, openModal
+  fetchCompletions, fetchLeaves, fetchSessions, riyadhToday, addDays,
+  formatHijri, formatHijriTime, formatTime, arabicOrdinal, toArabicDigits, toWesternDigits,
+  isOnLeave, memberDayStatus, consecutiveAbsence, commitmentStats,
+  normalizeSaudiPhone, normalizePin, escapeHtml, toast, openModal
 } from './lib.js';
 import { state } from './main.js';
 
@@ -14,14 +15,13 @@ const BOOK_DRAFT_KEY = 'midad_admin_book_draft_v1';
 let pendingBookFile = null;
 
 function readBookDraft() {
-  const empty = { title: '', author: '', daily_pages: '3', start_date: '' };
+  const empty = { title: '', author: '', daily_pages: '3' };
   try {
     const draft = JSON.parse(sessionStorage.getItem(BOOK_DRAFT_KEY) || '{}');
     return {
       title: typeof draft.title === 'string' ? draft.title : empty.title,
       author: typeof draft.author === 'string' ? draft.author : empty.author,
-      daily_pages: typeof draft.daily_pages === 'string' ? draft.daily_pages : empty.daily_pages,
-      start_date: typeof draft.start_date === 'string' ? draft.start_date : empty.start_date
+      daily_pages: typeof draft.daily_pages === 'string' ? draft.daily_pages : empty.daily_pages
     };
   } catch {
     return empty;
@@ -33,8 +33,7 @@ function saveBookDraft(view) {
     sessionStorage.setItem(BOOK_DRAFT_KEY, JSON.stringify({
       title: view.querySelector('#bf-title')?.value || '',
       author: view.querySelector('#bf-author')?.value || '',
-      daily_pages: view.querySelector('#bf-daily')?.value ?? '3',
-      start_date: view.querySelector('#bf-date')?.value || ''
+      daily_pages: view.querySelector('#bf-daily')?.value ?? '3'
     }));
   } catch { /* session storage may be disabled; current form state still stays intact */ }
 }
@@ -51,15 +50,16 @@ export async function renderAdminDashboard(view) {
   view.innerHTML = '<p class="muted center">جارٍ التحميل…</p>';
   try {
     const today = riyadhToday();
-    const [assignmentRes, members, completions, leaves, sessions] = await Promise.all([
+    const [assignmentRes, members, completions, leaves, sessions, book] = await Promise.all([
       supabase.rpc('get_today_assignment'),
       fetchMembers(),
       fetchCompletions(),
       fetchLeaves(),
-      fetchSessions()
+      fetchSessions(),
+      fetchActiveBook()
     ]);
+    if (assignmentRes.error) throw assignmentRes.error;
     const assignment = assignmentRes.data;
-    const book = assignment ? await fetchActiveBook() : null;
     const allAssignments = book ? await fetchAllAssignments(book.id) : [];
     const now = new Date();
 
@@ -74,7 +74,7 @@ export async function renderAdminDashboard(view) {
           ? '<span class="badge badge-warn">موقوف</span>'
           : '<span class="badge badge-muted">مستبعد</span>';
       } else if (!assignment) {
-        statusHtml = '<span class="badge badge-muted">لا قراءة اليوم</span>';
+        statusHtml = '<span class="badge badge-muted">لم تُنشر قراءة اليوم</span>';
       } else if (assignment.is_no_reading) {
         statusHtml = '<span class="badge badge-muted">لا قراءة اليوم</span>';
       } else {
@@ -107,6 +107,7 @@ export async function renderAdminDashboard(view) {
             ${assignment && !assignment.is_no_reading
               ? `<p class="muted small">صفحات اليوم: ${assignment.start_page} — ${assignment.end_page}</p>` : ''}
             ${assignment?.is_no_reading ? '<p class="muted small">لا يوجد قراءة لهذا اليوم</p>' : ''}
+            ${!assignment ? '<p class="muted small">لم تُنشر قراءة اليوم بعد.</p>' : ''}
           </div>
           <div class="row no-print">
             <a class="btn btn-sm" href="#/admin/members">إضافة عضو</a>
@@ -417,6 +418,7 @@ export async function renderBooks(view) {
             الصفحات: ${book.start_page} — ${book.end_page ?? '…'} · ${book.daily_pages} صفحات يوميًا
             · الحالة: ${book.is_paused ? 'متوقف مؤقتًا' : 'نشط'}
           </p>
+          <p class="small muted">عند الانتهاء استخدم «استبدال ملف PDF»؛ هذا النظام مخصص لكتاب واحد.</p>
           <div class="row">
             <button type="button" class="btn btn-sm" id="bk-toggle-pause">${book.is_paused ? 'استئناف القراءة' : 'إيقاف مؤقت'}</button>
             <button type="button" class="btn btn-sm" id="bk-edit">تعديل</button>
@@ -426,8 +428,9 @@ export async function renderBooks(view) {
         ` : '<p class="muted">لم يُضف كتاب بعد.</p>'}
       </div>
 
+      ${!book ? `
       <div class="card">
-        <h2>${book ? 'كتاب جديد' : 'إضافة كتاب'}</h2>
+        <h2>إضافة كتاب</h2>
         <form id="book-form" autocomplete="off">
           <div class="field"><label>عنوان الكتاب</label><input class="input" id="bf-title" value="${escapeHtml(bookDraft.title)}" /></div>
           <div class="field"><label>المؤلف (اختياري)</label><input class="input" id="bf-author" value="${escapeHtml(bookDraft.author)}" /></div>
@@ -439,37 +442,56 @@ export async function renderBooks(view) {
               <span class="small muted" id="bf-file-status" aria-live="polite" dir="auto">${pendingBookFile ? `تم اختيار: ${escapeHtml(pendingBookFile.name)}` : 'اضغط لاختيار ملف PDF'}</span>
             </div>
           </div>
-          <div class="field"><label>صفحات يوميًا</label><input class="input" id="bf-daily" type="number" min="1" value="${escapeHtml(bookDraft.daily_pages)}" /></div>
-          <div class="field"><label>تاريخ بداية القراءة</label><input class="input" id="bf-date" type="date" value="${escapeHtml(bookDraft.start_date || riyadhToday())}" />
-            <p class="small muted" id="bf-hijri"></p></div>
+          <div class="field"><label>صفحات يوميًا (اقتراح تلقائي للنطاق)</label><input class="input" id="bf-daily" type="number" min="1" value="${escapeHtml(bookDraft.daily_pages)}" /></div>
+          <p class="small muted">لا تُنشر القراءة تلقائيًا. بعد إضافة الكتاب تُحدَّد الصفحات ثم يضغط المشرف «نشر القراءة».</p>
           <button type="submit" class="btn btn-primary btn-block">حفظ الكتاب</button>
           <p class="small" id="bf-save-status" aria-live="polite"></p>
         </form>
-      </div>
+      </div>` : ''}
 
       ${book ? `
       <div class="card">
-        <h2>تخصيص صفحات يوم معين</h2>
-        <div class="field"><label>التاريخ</label><input class="input" id="ov-date" type="date" value="${riyadhToday()}" />
+        <h2>نشر قراءة</h2>
+        <div class="field"><label>تاريخ القراءة</label><input class="input" id="ov-date" type="date" value="${riyadhToday()}" />
           <p class="small muted" id="ov-hijri"></p></div>
-        <p class="small muted">اضغط على بطاقة صفحة لتحديدها كبداية، ثم اضغط على صفحة أخرى لتحديدها كنهاية. الصفحات المخصصة سابقًا تظهر باهتة.</p>
+        <p class="small muted">اضغط على صفحة البداية ثم صفحة النهاية. سيُقترح النطاق التالي من إعدادات الكتاب؛ لا تظهر القراءة للأعضاء حتى تضغط «نشر القراءة». الصفحات قبل البداية تظهر باهتة لأنها متجاوزة عمدًا.</p>
         <div id="ov-status" class="small" style="margin-bottom:8px"></div>
         <div class="page-grid" id="ov-grid"></div>
         <div class="row" style="margin-top:12px">
-          <button type="button" class="btn btn-primary" id="ov-save">حفظ التخصيص</button>
+          <button type="button" class="btn btn-primary" id="ov-publish">نشر القراءة</button>
           <button type="button" class="btn" id="ov-clear">مسح التحديد</button>
         </div>
-        <hr style="border:none;border-top:1px solid var(--border);margin:16px 0" />
-        <label class="row" style="gap:8px"><input type="checkbox" id="nr-check" /> <strong>لا يوجد قراءة لهذا اليوم</strong></label>
-        <div class="field" style="margin-top:8px"><label>السبب (اختياري)</label><input class="input" id="nr-reason" /></div>
-        <button type="button" class="btn" id="nr-save">حفظ</button>
+
+        <details class="compact-disclosure">
+          <summary><span>معلومات إضافية للمنشور</span><span class="small muted">اختيارية</span></summary>
+          <div class="disclosure-body">
+            <div class="field"><label>رقم مقدار اليوم</label>
+              <input class="input" id="ov-day-number" type="number" min="1" step="1" value="1" />
+              <p class="small muted" id="ov-next-day-hint"></p></div>
+            <div class="field"><label>من قوله (اختياري)</label><input class="input" id="ov-from-quote" /></div>
+            <div class="field"><label>إلى قوله (اختياري)</label><input class="input" id="ov-to-quote" /></div>
+          </div>
+        </details>
+
+        <details class="compact-disclosure">
+          <summary><span>لا يوجد قراءة لهذا اليوم</span><span class="small muted" id="nr-status">إعداد اختياري</span></summary>
+          <div class="disclosure-body">
+            <label class="row" style="gap:8px"><input type="checkbox" id="nr-check" /> <span>تسجيل اليوم بلا قراءة</span></label>
+            <div class="field" style="margin-top:8px"><label>السبب (اختياري)</label><input class="input" id="nr-reason" /></div>
+            <button type="button" class="btn" id="nr-save">حفظ حالة اليوم</button>
+          </div>
+        </details>
       </div>` : ''}
 
-      <div class="card">
-        <h2>إعدادات القراءة</h2>
-        <div class="field"><label>الحد الأدنى لبقاء الصفحة معروضة (بالثواني)</label>
-          <input class="input" id="set-seconds" type="number" min="0" value="${settings?.min_page_seconds ?? 60}" /></div>
-        <button type="button" class="btn btn-primary" id="set-save">حفظ الإعدادات</button>
+      <div class="card compact-settings-card">
+        <details class="compact-disclosure">
+          <summary><span>إعدادات القراءة</span><span class="small muted">إعدادات متقدمة</span></summary>
+          <div class="disclosure-body">
+            <div class="field"><label>الحد الأدنى لبقاء الصفحة معروضة (بالثواني)</label>
+              <input class="input" id="set-seconds" type="number" min="0" value="${settings?.min_page_seconds ?? 60}" /></div>
+            <button type="button" class="btn btn-primary" id="set-save">حفظ الإعدادات</button>
+          </div>
+        </details>
       </div>`;
 
     const bookForm = view.querySelector('#book-form');
@@ -477,24 +499,25 @@ export async function renderBooks(view) {
     const bookFileStatus = view.querySelector('#bf-file-status');
     const bookSaveStatus = view.querySelector('#bf-save-status');
     const persistDraft = () => saveBookDraft(view);
-    bookForm.addEventListener('input', persistDraft);
-    bookForm.addEventListener('change', persistDraft);
-    bookFileInput.addEventListener('change', () => {
-      pendingBookFile = bookFileInput.files?.item(0) || null;
-      bookFileStatus.textContent = pendingBookFile
-        ? `تم اختيار: ${pendingBookFile.name}`
-        : 'اضغط لاختيار ملف PDF';
-      persistDraft();
-    });
+    if (bookForm) {
+      bookForm.addEventListener('input', persistDraft);
+      bookForm.addEventListener('change', persistDraft);
+      bookFileInput.addEventListener('change', () => {
+        pendingBookFile = bookFileInput.files?.item(0) || null;
+        bookFileStatus.textContent = pendingBookFile
+          ? `تم اختيار: ${pendingBookFile.name}`
+          : 'اضغط لاختيار ملف PDF';
+        persistDraft();
+      });
+    }
 
-    // Hijri hints for date inputs
+    // Hijri hint for the selected date; it is only a display, not the publication timestamp.
     const bindHijri = (inputId, hintId) => {
       const inp = view.querySelector('#' + inputId);
       const hint = view.querySelector('#' + hintId);
       const upd = () => { hint.textContent = inp.value ? `بالتقويم الهجري: ${formatHijri(inp.value)}` : ''; };
       inp.addEventListener('change', upd); upd();
     };
-    bindHijri('bf-date', 'bf-hijri');
     if (book) bindHijri('ov-date', 'ov-hijri');
 
     view.querySelector('#set-save').addEventListener('click', async () => {
@@ -560,7 +583,8 @@ export async function renderBooks(view) {
 
           stage = 'تحديث سجل الكتاب';
           const { error } = await supabase.from('books').update({
-            storage_path: path, file_name: file.name, page_count: pageCount
+            storage_path: path, file_name: file.name, page_count: pageCount,
+            start_page: 1, end_page: pageCount
           }).eq('id', book.id);
           if (error) {
             cleanupAfterDbError = Boolean(error.code || error.status);
@@ -592,16 +616,16 @@ export async function renderBooks(view) {
         }
       });
 
-      setupPagePicker(view, book);
+      await setupPagePicker(view, book);
     }
 
-    bookForm.addEventListener('submit', async (e) => {
+    if (bookForm) bookForm.addEventListener('submit', async (e) => {
       e.preventDefault();
       const title = view.querySelector('#bf-title').value.trim();
       const author = view.querySelector('#bf-author').value.trim() || null;
       const file = pendingBookFile || bookFileInput.files?.item(0) || null;
       const daily_pages = parseInt(view.querySelector('#bf-daily').value, 10);
-      const start_date = view.querySelector('#bf-date').value || riyadhToday();
+      const start_date = riyadhToday();
       if (!title) return toast('أدخل عنوان الكتاب', 'error');
       if (!file) return toast('اضغط «اختيار ملف PDF» وحدد الملف أولًا.', 'error');
       if (!isPdfFile(file)) return toast('الملف المحدد ليس بصيغة PDF', 'error');
@@ -706,39 +730,102 @@ async function setupPagePicker(view, book) {
   const grid = view.querySelector('#ov-grid');
   const dateInput = view.querySelector('#ov-date');
   const statusEl = view.querySelector('#ov-status');
+  const dayNumberInput = view.querySelector('#ov-day-number');
+  const dayNumberHint = view.querySelector('#ov-next-day-hint');
+  const fromQuoteInput = view.querySelector('#ov-from-quote');
+  const toQuoteInput = view.querySelector('#ov-to-quote');
+  const noReadingInput = view.querySelector('#nr-check');
+  const noReadingReasonInput = view.querySelector('#nr-reason');
+  const noReadingStatus = view.querySelector('#nr-status');
+  const publishButton = view.querySelector('#ov-publish');
   let selStart = null;
   let selEnd = null;
   let pdf = null;
   let assignedRanges = [];
 
   async function loadPdf() {
-    const { data: signed } = await supabase.storage.from('books').createSignedUrl(book.storage_path, 3600);
-    if (signed?.signedUrl) pdf = await pdfjsLib.getDocument({ url: signed.signedUrl }).promise;
+    if (pdf) return;
+    const { data: signed, error } = await supabase.storage.from('books').createSignedUrl(book.storage_path, 3600);
+    if (error) throw error;
+    if (!signed?.signedUrl) throw new Error('تعذر فتح ملف الكتاب');
+    pdf = await pdfjsLib.getDocument({ url: signed.signedUrl }).promise;
+  }
+
+  function previousAssignment(date) {
+    return assignedRanges
+      .filter((a) => a.assignment_date < date && a.is_override && !a.is_no_reading)
+      .sort((a, b) => b.assignment_date.localeCompare(a.assignment_date))[0] || null;
+  }
+
+  function suggestedRange(date) {
+    const previous = previousAssignment(date);
+    const start = previous ? Number(previous.end_page) + 1 : Number(book.start_page || 1);
+    const total = Number(book.page_count || book.end_page || pdf?.numPages || 0);
+    if (!Number.isInteger(start) || (total && start > total)) return { start: null, end: null };
+    const pagesPerDay = Math.max(1, Number(book.daily_pages) || 1);
+    const end = total ? Math.min(start + pagesPerDay - 1, total) : start + pagesPerDay - 1;
+    return { start, end };
+  }
+
+  function suggestedDayNumber(date) {
+    const previous = assignedRanges
+      .filter((a) => a.assignment_date < date && a.is_override && !a.is_no_reading && Number.isInteger(Number(a.day_number)) && Number(a.day_number) > 0)
+      .sort((a, b) => b.assignment_date.localeCompare(a.assignment_date))[0];
+    return previous ? Number(previous.day_number) + 1 : 1;
+  }
+
+  function updateDayNumberHint() {
+    const value = Number.parseInt(toWesternDigits(dayNumberInput.value), 10);
+    dayNumberHint.textContent = Number.isInteger(value) && value > 0
+      ? `بعد نشر مقدار اليوم ${arabicOrdinal(value)}، سيكون الرقم المقترح للقراءة التالية ${arabicOrdinal(value + 1)} (${toArabicDigits(value + 1)}). ويمكنك تغييره.`
+      : 'أدخل رقم اليوم؛ سيُقترح الرقم التالي تلقائيًا بعد النشر.';
   }
 
   async function refresh() {
     const date = dateInput.value;
-    const { data: rows } = await supabase.from('assignments').select('*').eq('book_id', book.id);
+    if (!date) return;
+    const { data: rows, error } = await supabase.from('assignments').select('*').eq('book_id', book.id);
+    if (error) throw error;
     assignedRanges = rows || [];
     const existing = assignedRanges.find((a) => a.assignment_date === date);
-    if (existing) {
-      selStart = existing.start_page; selEnd = existing.end_page;
-      view.querySelector('#nr-check').checked = existing.is_no_reading;
-      view.querySelector('#nr-reason').value = existing.no_reading_reason || '';
-      statusEl.textContent = existing.is_no_reading
-        ? 'هذا اليوم: لا يوجد قراءة'
-        : `المخصص حاليًا: صفحات ${existing.start_page} — ${existing.end_page}`;
+
+    if (existing && !existing.is_no_reading) {
+      selStart = existing.start_page;
+      selEnd = existing.end_page;
     } else {
-      selStart = null; selEnd = null;
-      view.querySelector('#nr-check').checked = false;
-      view.querySelector('#nr-reason').value = '';
-      statusEl.textContent = 'لا يوجد تخصيص لهذا التاريخ بعد — سيُحسب تلقائيًا من الإعدادات.';
+      const range = suggestedRange(date);
+      selStart = range.start;
+      selEnd = range.end;
+    }
+
+    noReadingInput.checked = Boolean(existing?.is_no_reading);
+    noReadingReasonInput.value = existing?.is_no_reading ? (existing.no_reading_reason || '') : '';
+    noReadingStatus.textContent = existing?.is_no_reading ? 'مفعّل لهذا التاريخ' : 'غير مفعّل';
+    dayNumberInput.value = String(
+      existing && !existing.is_no_reading && Number(existing.day_number) > 0
+        ? existing.day_number
+        : suggestedDayNumber(date)
+    );
+    fromQuoteInput.value = existing?.from_quote || '';
+    toQuoteInput.value = existing?.to_quote || '';
+    updateDayNumberHint();
+
+    if (existing?.is_no_reading) {
+      statusEl.textContent = 'هذا التاريخ مسجل بلا قراءة.';
+    } else if (existing?.is_override) {
+      statusEl.textContent = `قراءة منشورة: صفحات ${existing.start_page} — ${existing.end_page}. يمكن تعديلها ثم إعادة النشر.`;
+    } else if (existing) {
+      statusEl.textContent = `يوجد نطاق قديم لم يُنشر يدويًا: صفحات ${existing.start_page} — ${existing.end_page}. اضغط «نشر القراءة» لإظهاره للأعضاء.`;
+    } else if (selStart != null && selEnd != null) {
+      statusEl.textContent = `نطاق مقترح غير منشور: صفحات ${selStart} — ${selEnd}. لن يظهر للأعضاء حتى تضغط «نشر القراءة».`;
+    } else {
+      statusEl.textContent = 'لا توجد صفحات متبقية في الملف لتحديد نطاق جديد.';
     }
     drawGrid();
   }
 
   function isAssigned(page) {
-    return assignedRanges.some((a) => !a.is_no_reading && page >= a.start_page && page <= a.end_page);
+    return assignedRanges.some((a) => a.is_override && !a.is_no_reading && page >= a.start_page && page <= a.end_page);
   }
 
   function drawGrid() {
@@ -748,38 +835,41 @@ async function setupPagePicker(view, book) {
     for (let p = 1; p <= total; p++) {
       const cls = ['page-card'];
       if (isAssigned(p)) cls.push('assigned');
+      if (selStart != null && p < selStart) cls.push('skipped');
       if (p === selStart) cls.push('sel-start');
       if (p === selEnd) cls.push('sel-end');
       html += `<div class="${cls.join(' ')}" data-page="${p}">
         <button type="button" class="preview-btn" data-preview="${p}" title="معاينة">👁</button>
-        <div class="num">${p}</div>
+        <div class="num">${toArabicDigits(p)}</div>
       </div>`;
     }
     grid.innerHTML = html;
     grid.querySelectorAll('.page-card').forEach((card) => {
       card.addEventListener('click', (e) => {
         if (e.target.closest('[data-preview]')) return;
-        const p = parseInt(card.dataset.page, 10);
-        if (selStart == null || (selStart != null && selEnd != null)) {
-          selStart = p; selEnd = null;
-        } else if (p >= selStart) {
-          selEnd = p;
+        const page = Number.parseInt(card.dataset.page, 10);
+        if (selStart == null || selEnd != null) {
+          selStart = page;
+          selEnd = null;
+        } else if (page >= selStart) {
+          selEnd = page;
         } else {
-          selEnd = selStart; selStart = p;
+          selEnd = selStart;
+          selStart = page;
         }
         statusEl.textContent = selEnd != null
-          ? `المحدد: صفحات ${selStart} — ${selEnd}`
-          : `حددت البداية: صفحة ${selStart} — اضغط على صفحة النهاية`;
+          ? `النطاق المحدد وغير المنشور: صفحات ${selStart} — ${selEnd}`
+          : `بداية النطاق: صفحة ${selStart}. اختر صفحة النهاية.`;
         drawGrid();
       });
     });
-    grid.querySelectorAll('[data-preview]').forEach((b) => b.addEventListener('click', async (e) => {
+    grid.querySelectorAll('[data-preview]').forEach((button) => button.addEventListener('click', async (e) => {
       e.stopPropagation();
-      const p = parseInt(b.dataset.preview, 10);
-      const { overlay } = openModal(`صفحة ${p}`, '<p class="muted center">جارٍ التحميل…</p>');
+      const pageNumber = Number.parseInt(button.dataset.preview, 10);
+      const { overlay } = openModal(`صفحة ${toArabicDigits(pageNumber)}`, '<p class="muted center">جارٍ التحميل…</p>');
       try {
-        if (!pdf) await loadPdf();
-        const page = await pdf.getPage(p);
+        await loadPdf();
+        const page = await pdf.getPage(pageNumber);
         const base = page.getViewport({ scale: 1 });
         const scale = 480 / base.width;
         const viewport = page.getViewport({ scale });
@@ -789,70 +879,96 @@ async function setupPagePicker(view, book) {
         await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
         overlay.querySelector('.modal-body').innerHTML = '';
         overlay.querySelector('.modal-body').appendChild(canvas);
-      } catch (err) {
-        overlay.querySelector('.modal-body').innerHTML = `<p class="center">تعذر العرض: ${escapeHtml(err.message)}</p>`;
+      } catch (error) {
+        overlay.querySelector('.modal-body').innerHTML = `<p class="center">تعذر العرض: ${escapeHtml(error.message)}</p>`;
       }
     }));
   }
 
-  dateInput.addEventListener('change', refresh);
+  dateInput.addEventListener('change', () => refresh().catch((error) => toast('تعذر تحميل تخصيص التاريخ: ' + error.message, 'error')));
+  dayNumberInput.addEventListener('input', updateDayNumberHint);
   view.querySelector('#ov-clear').addEventListener('click', () => {
-    selStart = null; selEnd = null; drawGrid();
-    statusEl.textContent = 'تم مسح التحديد.';
+    selStart = null;
+    selEnd = null;
+    drawGrid();
+    statusEl.textContent = 'تم مسح التحديد؛ لن يُنشر شيء حتى تختار نطاقًا وتضغط «نشر القراءة».';
   });
 
-  view.querySelector('#ov-save').addEventListener('click', async () => {
+  publishButton.addEventListener('click', async () => {
     const date = dateInput.value;
-    if (!date) return toast('اختر التاريخ', 'error');
+    if (!date) return toast('اختر تاريخ القراءة', 'error');
+    if (noReadingInput.checked) return toast('أزل تحديد «لا يوجد قراءة» أو احفظ حالة اليوم بلا قراءة.', 'error');
     if (selStart == null || selEnd == null) return toast('حدد صفحة البداية والنهاية', 'error');
-    const payload = {
-      book_id: book.id, assignment_date: date, start_page: selStart, end_page: selEnd,
-      published_at: riyadhMidnightISO(date), is_override: true, is_no_reading: false,
-      no_reading_reason: null, created_by: state.profile.id
-    };
-    const { data: existing } = await supabase.from('assignments').select('id')
-      .eq('book_id', book.id).eq('assignment_date', date).maybeSingle();
-    const { error } = existing
-      ? await supabase.from('assignments').update(payload).eq('id', existing.id)
-      : await supabase.from('assignments').insert(payload);
-    if (error) return toast(error.message, 'error');
-    await logActivity('override_assignment', 'assignment', date, { start_page: selStart, end_page: selEnd });
-    toast('تم حفظ التخصيص', 'ok');
-    refresh();
+    const dayNumber = Number.parseInt(toWesternDigits(dayNumberInput.value), 10);
+    if (!Number.isInteger(dayNumber) || dayNumber < 1) return toast('أدخل رقم اليوم بصيغة صحيحة', 'error');
+
+    publishButton.disabled = true;
+    publishButton.textContent = 'جارٍ النشر…';
+    try {
+      const { data, error } = await supabase.rpc('publish_assignment', {
+        p_book_id: book.id,
+        p_date: date,
+        p_start_page: selStart,
+        p_end_page: selEnd,
+        p_day_number: dayNumber,
+        p_from_quote: fromQuoteInput.value.trim() || null,
+        p_to_quote: toQuoteInput.value.trim() || null
+      });
+      if (error) throw error;
+      const published = Array.isArray(data) ? data[0] : data;
+      if (!published?.id) throw new Error('لم يصل تأكيد نشر القراءة من قاعدة البيانات.');
+      await logActivity('publish_reading', 'assignment', date, {
+        start_page: selStart, end_page: selEnd, day_number: dayNumber
+      });
+      toast('تم نشر القراءة', 'ok');
+      await refresh();
+    } catch (error) {
+      toast('تعذر نشر القراءة: ' + error.message, 'error');
+    } finally {
+      publishButton.disabled = false;
+      publishButton.textContent = 'نشر القراءة';
+    }
   });
 
   view.querySelector('#nr-save').addEventListener('click', async () => {
     const date = dateInput.value;
-    const isNo = view.querySelector('#nr-check').checked;
-    const reason = view.querySelector('#nr-reason').value.trim() || null;
-    if (!date) return toast('اختر التاريخ', 'error');
-    const { data: existing } = await supabase.from('assignments').select('*')
-      .eq('book_id', book.id).eq('assignment_date', date).maybeSingle();
-    const payload = isNo
-      ? {
-          book_id: book.id, assignment_date: date,
-          start_page: existing?.start_page ?? book.start_page,
-          end_page: existing?.end_page ?? book.start_page,
-          published_at: riyadhMidnightISO(date), is_no_reading: true, no_reading_reason: reason,
-          created_by: state.profile.id
-        }
-      : {
-          book_id: book.id, assignment_date: date,
-          start_page: existing?.start_page ?? book.start_page,
-          end_page: existing?.end_page ?? book.start_page,
-          published_at: riyadhMidnightISO(date), is_no_reading: false, no_reading_reason: null,
-          created_by: state.profile.id
-        };
-    const { error } = existing
-      ? await supabase.from('assignments').update(payload).eq('id', existing.id)
-      : await supabase.from('assignments').insert(payload);
-    if (error) return toast(error.message, 'error');
-    await logActivity(isNo ? 'no_reading_day' : 'clear_no_reading_day', 'assignment', date, { reason });
-    toast('تم الحفظ', 'ok');
-    refresh();
+    const isNoReading = noReadingInput.checked;
+    const reason = noReadingReasonInput.value.trim() || null;
+    if (!date) return toast('اختر تاريخ القراءة', 'error');
+
+    const existing = assignedRanges.find((assignment) => assignment.assignment_date === date);
+    if (isNoReading) {
+      if (existing && !existing.is_no_reading && !confirm('سيؤدي ذلك إلى استبدال القراءة المنشورة لهذا التاريخ بيوم بلا قراءة. هل تريد المتابعة؟')) return;
+      const startPage = selStart ?? Number(book.start_page || 1);
+      const endPage = selEnd ?? startPage;
+      const { error } = await supabase.from('assignments').upsert({
+        book_id: book.id,
+        assignment_date: date,
+        start_page: startPage,
+        end_page: Math.max(startPage, endPage),
+        published_at: new Date().toISOString(),
+        is_override: true,
+        is_no_reading: true,
+        no_reading_reason: reason,
+        created_by: state.profile.id,
+        day_number: null,
+        from_quote: null,
+        to_quote: null
+      }, { onConflict: 'book_id,assignment_date' });
+      if (error) return toast('تعذر حفظ اليوم بلا قراءة: ' + error.message, 'error');
+      await logActivity('no_reading_day', 'assignment', date, { reason });
+      toast('تم تسجيل اليوم بلا قراءة', 'ok');
+    } else {
+      if (!existing?.is_no_reading) return toast('لا توجد حالة «لا يوجد قراءة» لإلغائها.', 'info');
+      const { error } = await supabase.from('assignments').delete().eq('id', existing.id);
+      if (error) return toast('تعذر إلغاء حالة اليوم: ' + error.message, 'error');
+      await logActivity('clear_no_reading_day', 'assignment', date, {});
+      toast('تم إلغاء حالة اليوم بلا قراءة', 'ok');
+    }
+    await refresh();
   });
 
-  await loadPdf();
+  try { await loadPdf(); } catch { /* previews can retry; the page grid uses the stored page count */ }
   await refresh();
 }
 
@@ -901,10 +1017,12 @@ export async function renderReports(view) {
       if (!date || !book) return;
       const out = view.querySelector('#rep-output');
       out.innerHTML = '<p class="muted">جارٍ التحميل…</p>';
-      const { data: assignment } = await supabase.rpc('ensure_assignment', { p_date: date });
+      const { data: assignment, error: assignmentError } = await supabase.from('assignments').select('*')
+        .eq('book_id', book.id).eq('assignment_date', date).eq('is_override', true).maybeSingle();
+      if (assignmentError) throw assignmentError;
       const [completions, leaves, sessions] = await Promise.all([fetchCompletions(), fetchLeaves(), fetchSessions()]);
       if (!assignment) {
-        out.innerHTML = '<p class="muted">لا توجد قراءة في هذا التاريخ.</p>';
+        out.innerHTML = '<p class="muted">لم تُنشر قراءة لهذا التاريخ.</p>';
         return;
       }
       const now = new Date();
@@ -935,11 +1053,10 @@ export async function renderReports(view) {
     if (book) {
       const dates = [];
       for (let i = 6; i >= 0; i--) dates.push(addDays(today, -i));
-      const weekAssignments = [];
-      for (const d of dates) {
-        const { data } = await supabase.rpc('ensure_assignment', { p_date: d });
-        if (data) weekAssignments.push(data);
-      }
+      const allAssignments = await fetchAllAssignments(book.id);
+      const weekAssignments = dates
+        .map((date) => allAssignments.find((assignment) => assignment.assignment_date === date))
+        .filter((assignment) => assignment?.is_override);
       const [completions, leaves] = await Promise.all([fetchCompletions(), fetchLeaves()]);
       const weeklyRows = activeMembers.map((m) => {
         const relevant = weekAssignments.filter((a) => !a.is_no_reading && !isOnLeave(leaves, m.id, a.assignment_date));
@@ -955,7 +1072,6 @@ export async function renderReports(view) {
         <table class="tbl"><thead><tr><th>العضو</th><th>قراءات مكتملة</th></tr></thead><tbody>${weeklyRows}</tbody></table>`;
 
       // Commitment
-      const allAssignments = await fetchAllAssignments(book.id);
       const commitRows = activeMembers.map((m) => {
         const s = commitmentStats(allAssignments, completions, leaves, m.id, today);
         return `<tr><td>${escapeHtml(m.full_name)}</td><td>${s.pct}%</td><td>${s.done} / ${s.total}</td></tr>`;
@@ -982,7 +1098,7 @@ export async function renderLogs(view, isSuper) {
       set_status: 'تغيير حالة', delete_user: 'حذف نهائي', create_assistant: 'إضافة مشرف مساعد',
       add_book: 'إضافة كتاب', update_book: 'تعديل كتاب', replace_book_pdf: 'استبدال PDF',
       pause_book: 'إيقاف الكتاب', resume_book: 'استئناف الكتاب', override_assignment: 'تخصيص صفحات',
-      no_reading_day: 'يوم بلا قراءة', clear_no_reading_day: 'إلغاء يوم بلا قراءة',
+      publish_reading: 'نشر قراءة', no_reading_day: 'يوم بلا قراءة', clear_no_reading_day: 'إلغاء يوم بلا قراءة',
       grant_leave: 'منح إجازة', update_settings: 'تعديل إعدادات', bootstrap_super_admin: 'تهيئة النظام'
     };
     const rows = (logs || []).map((l) => `<li>

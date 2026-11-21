@@ -72,13 +72,64 @@ export function riyadhMidnightISO(dateStr) {
 const hijriDateFmt = new Intl.DateTimeFormat('ar-SA-u-ca-islamic-umalqura', {
   timeZone: TIME_ZONE, day: 'numeric', month: 'long', year: 'numeric'
 });
+const hijriNumericDateFmt = new Intl.DateTimeFormat('en-US-u-ca-islamic-umalqura-nu-latn', {
+  timeZone: TIME_ZONE, day: 'numeric', month: 'numeric', year: 'numeric'
+});
 const hijriTimeFmt = new Intl.DateTimeFormat('ar-SA', {
   timeZone: TIME_ZONE, hour: 'numeric', minute: '2-digit', hour12: true
 });
 
+function calendarDate(input) {
+  return typeof input === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(input)
+    ? new Date(`${input}T12:00:00+03:00`)
+    : new Date(input);
+}
+
+export function toArabicDigits(value) {
+  return String(value ?? '').replace(/\d/g, (digit) => '٠١٢٣٤٥٦٧٨٩'[Number(digit)]);
+}
+
 export function formatHijri(input) {
   if (!input) return '—';
-  return hijriDateFmt.format(new Date(input));
+  return hijriDateFmt.format(calendarDate(input));
+}
+
+/** Numeric Hijri date in yyyy/m/d order, e.g. ١٤٤٨/٦/١١. */
+export function formatHijriNumeric(input) {
+  if (!input) return '—';
+  const values = Object.fromEntries(
+    hijriNumericDateFmt.formatToParts(calendarDate(input))
+      .filter((part) => ['year', 'month', 'day'].includes(part.type))
+      .map((part) => [part.type, part.value])
+  );
+  return toArabicDigits(`${values.year}/${values.month}/${values.day}`);
+}
+
+const arabicOrdinalUnits = ['', 'الأول', 'الثاني', 'الثالث', 'الرابع', 'الخامس', 'السادس', 'السابع', 'الثامن', 'التاسع'];
+const arabicOrdinalTens = {
+  20: 'العشرون', 30: 'الثلاثون', 40: 'الأربعون', 50: 'الخمسون',
+  60: 'الستون', 70: 'السبعون', 80: 'الثمانون', 90: 'التسعون'
+};
+const arabicOrdinalTeens = {
+  10: 'العاشر', 11: 'الحادي عشر', 12: 'الثاني عشر', 13: 'الثالث عشر',
+  14: 'الرابع عشر', 15: 'الخامس عشر', 16: 'السادس عشر', 17: 'السابع عشر',
+  18: 'الثامن عشر', 19: 'التاسع عشر'
+};
+
+export function arabicOrdinal(value) {
+  const number = Number(value);
+  if (!Number.isInteger(number) || number < 1) return '';
+  if (number <= 9) return arabicOrdinalUnits[number];
+  if (arabicOrdinalTeens[number]) return arabicOrdinalTeens[number];
+  if (number < 100) {
+    const tens = Math.floor(number / 10) * 10;
+    const units = number % 10;
+    if (!units) return arabicOrdinalTens[tens];
+    const unit = units === 1 ? 'الحادي' : arabicOrdinalUnits[units];
+    return `${unit} و${arabicOrdinalTens[tens]}`;
+  }
+  if (number === 100) return 'المائة';
+  return `رقم ${toArabicDigits(number)}`;
 }
 
 export function formatHijriTime(input) {
