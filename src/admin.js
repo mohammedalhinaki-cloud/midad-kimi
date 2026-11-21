@@ -4,7 +4,7 @@ import {
   supabase, callManageUsers, logActivity, fetchActiveBook, fetchMembers, fetchAllAssignments,
   fetchCompletions, fetchLeaves, fetchSessions, riyadhToday, riyadhMidnightISO, addDays,
   formatHijri, formatHijriTime, formatTime, isOnLeave, memberDayStatus, consecutiveAbsence,
-  commitmentStats, normalizeSaudiPhone, normalizePin, escapeHtml, toast, openModal, printedPage
+  commitmentStats, normalizeSaudiPhone, normalizePin, escapeHtml, toast, openModal
 } from './lib.js';
 import { state } from './main.js';
 
@@ -386,7 +386,7 @@ export async function renderBooks(view) {
             <button type="button" class="btn btn-sm" id="bk-toggle-pause">${book.is_paused ? 'استئناف القراءة' : 'إيقاف مؤقت'}</button>
             <button type="button" class="btn btn-sm" id="bk-edit">تعديل</button>
             <button type="button" class="btn btn-sm" id="bk-replace">استبدال ملف PDF</button>
-            <input type="file" id="bk-replace-file" accept="application/pdf" hidden />
+            <input type="file" id="bk-replace-file" accept=".pdf,application/pdf" hidden />
           </div>
         ` : '<p class="muted">لم يُضف كتاب بعد.</p>'}
       </div>
@@ -396,14 +396,12 @@ export async function renderBooks(view) {
         <form id="book-form" autocomplete="off">
           <div class="field"><label>عنوان الكتاب</label><input class="input" id="bf-title" /></div>
           <div class="field"><label>المؤلف (اختياري)</label><input class="input" id="bf-author" /></div>
-          <div class="field"><label>ملف PDF</label><input class="input" id="bf-file" type="file" accept="application/pdf" /></div>
+          <div class="field"><label>ملف PDF</label><input class="input" id="bf-file" type="file" accept=".pdf,application/pdf" /></div>
           <div class="row">
             <div class="field grow"><label>صفحة البداية</label><input class="input" id="bf-start" type="number" min="1" value="1" /></div>
             <div class="field grow"><label>صفحة النهاية</label><input class="input" id="bf-end" type="number" min="1" placeholder="آخر صفحة" /></div>
             <div class="field grow"><label>صفحات يوميًا</label><input class="input" id="bf-daily" type="number" min="1" value="3" /></div>
           </div>
-          <div class="field"><label>فرق ترقيم الصفحات المطبوعة عن PDF (اختياري، مثال: -5)</label>
-            <input class="input" id="bf-offset" type="number" placeholder="اتركه فارغًا إن لم ينطبق" /></div>
           <div class="field"><label>تاريخ بداية القراءة</label><input class="input" id="bf-date" type="date" value="${riyadhToday()}" />
             <p class="small muted" id="bf-hijri"></p></div>
           <button type="submit" class="btn btn-primary btn-block">حفظ الكتاب</button>
@@ -472,19 +470,16 @@ export async function renderBooks(view) {
               <div class="field grow"><label>صفحة النهاية</label><input class="input" id="be-end" type="number" min="1" value="${book.end_page ?? ''}" /></div>
               <div class="field grow"><label>صفحات يوميًا</label><input class="input" id="be-daily" type="number" min="1" value="${book.daily_pages}" /></div>
             </div>
-            <div class="field"><label>فرق الترقيم المطبوع</label><input class="input" id="be-offset" type="number" value="${book.printed_page_offset ?? ''}" /></div>
             <button type="submit" class="btn btn-primary btn-block">حفظ</button>
           </form>`);
         overlay.querySelector('#be-form').addEventListener('submit', async (e) => {
           e.preventDefault();
-          const off = overlay.querySelector('#be-offset').value;
           const { error } = await supabase.from('books').update({
             title: overlay.querySelector('#be-title').value.trim(),
             author: overlay.querySelector('#be-author').value.trim() || null,
             start_page: parseInt(overlay.querySelector('#be-start').value, 10),
             end_page: overlay.querySelector('#be-end').value ? parseInt(overlay.querySelector('#be-end').value, 10) : null,
-            daily_pages: parseInt(overlay.querySelector('#be-daily').value, 10),
-            printed_page_offset: off === '' ? null : parseInt(off, 10)
+            daily_pages: parseInt(overlay.querySelector('#be-daily').value, 10)
           }).eq('id', book.id);
           if (error) return toast(error.message, 'error');
           await logActivity('update_book', 'book', book.id, {});
@@ -494,19 +489,59 @@ export async function renderBooks(view) {
 
       view.querySelector('#bk-replace').addEventListener('click', () => view.querySelector('#bk-replace-file').click());
       view.querySelector('#bk-replace-file').addEventListener('change', async (e) => {
-        const file = e.target.files[0];
+        const file = e.target.files?.[0];
         if (!file) return;
+        if (!isPdfFile(file)) {
+          toast('اختر ملفًا بصيغة PDF', 'error');
+          e.target.value = '';
+          return;
+        }
+
+        let uploadedPath = null;
+        let cleanupAfterDbError = false;
+        let stage = 'فحص ملف PDF';
         try {
-          const path = `${book.id}/${Date.now()}-${file.name}`;
-          const { error: upErr } = await supabase.storage.from('books').upload(path, file, { upsert: false });
-          if (upErr) throw upErr;
           const pageCount = await countPdfPages(file);
-          const { error } = await supabase.from('books').update({ storage_path: path, file_name: file.name, page_count: pageCount }).eq('id', book.id);
-          if (error) throw error;
+          const path = newPdfStoragePath(`${book.id}/`);
+          stage = 'رفع ملف PDF إلى التخزين الخاص';
+          const { error: upErr } = await supabase.storage.from('books').upload(path, file, {
+            cacheControl: '3600', contentType: 'application/pdf', upsert: false
+          });
+          if (upErr) throw upErr;
+          uploadedPath = path;
+
+          stage = 'تحديث سجل الكتاب';
+          const { error } = await supabase.from('books').update({
+            storage_path: path, file_name: file.name, page_count: pageCount
+          }).eq('id', book.id);
+          if (error) {
+            cleanupAfterDbError = Boolean(error.code || error.status);
+            throw error;
+          }
+
+          const previousPath = book.storage_path;
+          uploadedPath = null;
+          if (previousPath && previousPath !== path) {
+            const { error: removeError } = await supabase.storage.from('books').remove([previousPath]);
+            if (removeError) console.warn('[مِداد] تعذر حذف نسخة PDF السابقة:', removeError.message);
+          }
           await logActivity('replace_book_pdf', 'book', book.id, { file_name: file.name });
           toast('تم استبدال ملف PDF', 'ok');
-          renderBooks(view);
-        } catch (err) { toast('تعذر الاستبدال: ' + err.message, 'error'); }
+          await renderBooks(view);
+        } catch (err) {
+          if (uploadedPath && cleanupAfterDbError) {
+            try {
+              const { error: cleanupError } = await supabase.storage.from('books').remove([uploadedPath]);
+              if (cleanupError) console.warn('[مِداد] تعذر تنظيف ملف PDF غير المرتبط:', cleanupError.message);
+            } catch (cleanupError) {
+              console.warn('[مِداد] تعذر تنظيف ملف PDF غير المرتبط:', cleanupError);
+            }
+          }
+          console.error('[مِداد] فشل استبدال ملف PDF:', stage, err);
+          toast(bookFileError(stage, err), 'error');
+        } finally {
+          e.target.value = '';
+        }
       });
 
       setupPagePicker(view, book);
@@ -516,37 +551,61 @@ export async function renderBooks(view) {
       e.preventDefault();
       const title = view.querySelector('#bf-title').value.trim();
       const author = view.querySelector('#bf-author').value.trim() || null;
-      const file = view.querySelector('#bf-file').files[0];
+      const file = view.querySelector('#bf-file').files?.[0];
       const start_page = parseInt(view.querySelector('#bf-start').value, 10);
       const endRaw = view.querySelector('#bf-end').value;
       const end_page = endRaw ? parseInt(endRaw, 10) : null;
       const daily_pages = parseInt(view.querySelector('#bf-daily').value, 10);
-      const offRaw = view.querySelector('#bf-offset').value;
       const start_date = view.querySelector('#bf-date').value || riyadhToday();
       if (!title || !file) return toast('أدخل العنوان وملف PDF', 'error');
+      if (!isPdfFile(file)) return toast('اختر ملفًا بصيغة PDF', 'error');
       if (!start_page || start_page < 1) return toast('صفحة البداية غير صحيحة', 'error');
       if (end_page != null && end_page < start_page) return toast('صفحة النهاية يجب أن تكون بعد البداية', 'error');
       if (!daily_pages || daily_pages < 1) return toast('عدد الصفحات اليومية غير صحيح', 'error');
 
       const btn = e.target.querySelector('button[type=submit]');
       btn.disabled = true; btn.textContent = 'جارٍ الرفع…';
+      let uploadedPath = null;
+      let cleanupAfterDbError = false;
+      let stage = 'فحص ملف PDF';
       try {
         const pageCount = await countPdfPages(file);
-        const path = `${crypto.randomUUID()}/${file.name}`;
-        const { error: upErr } = await supabase.storage.from('books').upload(path, file);
+        if (start_page > pageCount || (end_page != null && end_page > pageCount)) {
+          throw new Error(`عدد صفحات الملف ${pageCount}، وصفحة البداية أو النهاية تتجاوزه.`);
+        }
+
+        const path = newPdfStoragePath();
+        stage = 'رفع ملف PDF إلى التخزين الخاص';
+        const { error: upErr } = await supabase.storage.from('books').upload(path, file, {
+          cacheControl: '3600', contentType: 'application/pdf', upsert: false
+        });
         if (upErr) throw upErr;
+        uploadedPath = path;
+
+        stage = 'حفظ بيانات الكتاب';
         const { data, error } = await supabase.from('books').insert({
           title, author, storage_path: path, file_name: file.name, page_count: pageCount,
-          start_page, end_page, daily_pages,
-          printed_page_offset: offRaw === '' ? null : parseInt(offRaw, 10),
-          start_date, created_by: state.profile.id
+          start_page, end_page, daily_pages, start_date, created_by: state.profile.id
         }).select().single();
-        if (error) throw error;
+        if (error) {
+          cleanupAfterDbError = Boolean(error.code || error.status);
+          throw error;
+        }
+        uploadedPath = null;
         await logActivity('add_book', 'book', data.id, { title });
         toast('تمت إضافة الكتاب بنجاح', 'ok');
-        renderBooks(view);
+        await renderBooks(view);
       } catch (err) {
-        toast('تعذر الحفظ: ' + err.message, 'error');
+        if (uploadedPath && cleanupAfterDbError) {
+          try {
+            const { error: cleanupError } = await supabase.storage.from('books').remove([uploadedPath]);
+            if (cleanupError) console.warn('[مِداد] تعذر تنظيف ملف PDF غير المرتبط:', cleanupError.message);
+          } catch (cleanupError) {
+            console.warn('[مِداد] تعذر تنظيف ملف PDF غير المرتبط:', cleanupError);
+          }
+        }
+        console.error('[مِداد] فشل إضافة ملف الكتاب:', stage, err);
+        toast(bookFileError(stage, err), 'error');
         btn.disabled = false; btn.textContent = 'حفظ الكتاب';
       }
     });
@@ -555,10 +614,46 @@ export async function renderBooks(view) {
   }
 }
 
+function isPdfFile(file) {
+  return Boolean(file && (
+    file.type?.toLowerCase() === 'application/pdf' ||
+    file.name?.toLowerCase().endsWith('.pdf')
+  ));
+}
+
+function newPdfStoragePath(prefix = '') {
+  const id = globalThis.crypto?.randomUUID?.()
+    || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  return `${prefix}${id}.pdf`;
+}
+
+function bookFileError(stage, error) {
+  const status = String(error?.statusCode ?? error?.status ?? '');
+  const message = String(error?.message || error || 'خطأ غير معروف');
+  if (status === '413' || /payload too large|entity too large|file.{0,20}too large|size limit/i.test(message)) {
+    return 'حجم ملف PDF يتجاوز الحد المسموح به في مشروع Supabase.';
+  }
+  if (status === '401') return 'انتهت جلسة المشرف؛ سجّل الدخول مجددًا ثم حاول رفع الملف.';
+  if (status === '403' || /row-level security|not authorized|permission denied/i.test(message)) {
+    return 'رفضت صلاحيات Supabase رفع الملف أو حفظ بياناته. تأكد من الدخول بحساب مشرف نشط.';
+  }
+  return `تعذر ${stage}: ${message}`;
+}
+
 async function countPdfPages(file) {
-  const buf = await file.arrayBuffer();
-  const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
-  return pdf.numPages;
+  if (!file?.size) throw new Error('الملف فارغ.');
+  try {
+    const buf = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(buf) }).promise;
+    if (!pdf.numPages) throw new Error('لم يعثر النظام على صفحات في الملف.');
+    return pdf.numPages;
+  } catch (error) {
+    if (error?.name === 'PasswordException') {
+      throw new Error('ملف PDF محمي بكلمة مرور؛ أزل الحماية قبل رفعه.');
+    }
+    if (error?.message === 'الملف فارغ.' || error?.message === 'لم يعثر النظام على صفحات في الملف.') throw error;
+    throw new Error(`تعذر قراءة ملف PDF: ${error?.message || 'الملف تالف أو غير صالح'}`);
+  }
 }
 
 async function setupPagePicker(view, book) {
@@ -605,7 +700,6 @@ async function setupPagePicker(view, book) {
     if (!total) { grid.innerHTML = '<p class="muted">عدد صفحات PDF غير معروف بعد.</p>'; return; }
     let html = '';
     for (let p = 1; p <= total; p++) {
-      const printed = printedPage(book, p);
       const cls = ['page-card'];
       if (isAssigned(p)) cls.push('assigned');
       if (p === selStart) cls.push('sel-start');
@@ -613,7 +707,6 @@ async function setupPagePicker(view, book) {
       html += `<div class="${cls.join(' ')}" data-page="${p}">
         <button type="button" class="preview-btn" data-preview="${p}" title="معاينة">👁</button>
         <div class="num">${p}</div>
-        ${printed != null ? `<div class="printed">مطبوعة ${printed}</div>` : ''}
       </div>`;
     }
     grid.innerHTML = html;

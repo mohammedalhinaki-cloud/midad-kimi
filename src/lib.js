@@ -290,8 +290,3 @@ export function commitmentStats(assignments, completions, leaves, memberId, toda
     pct: relevant.length ? Math.round((done / relevant.length) * 100) : 0
   };
 }
-
-export function printedPage(book, pdfPage) {
-  if (!book || book.printed_page_offset == null) return null;
-  return pdfPage + book.printed_page_offset;
-}

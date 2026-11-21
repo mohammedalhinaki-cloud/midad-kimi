@@ -151,7 +151,6 @@ p { margin: 6px 0; }
   padding: 8px 4px; text-align: center; cursor: pointer; position: relative;
 }
 .page-card .num { font-weight: 700; font-size: 1.05rem; }
-.page-card .printed { font-size: 0.72rem; color: var(--muted); }
 .page-card.assigned { opacity: 0.4; }
 .page-card.sel-start, .page-card.sel-end { border-color: var(--accent); background: #e6f4ec; outline: 2px solid var(--accent); }
 .page-card .preview-btn {
