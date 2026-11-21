@@ -146,7 +146,9 @@ export async function callManageUsers(action, payload = {}) {
     // as an English SDK message to the user.
     if (error.name === 'FunctionsFetchError') {
       console.error('[مِداد] تعذّر الاتصال بدالة manage-users:', error.context);
-      throw new Error('تعذّر الاتصال بخدمة الحسابات ولم يصل رد يؤكد إتمام العملية. تحقّق من الحالة قبل إعادة المحاولة.');
+      const networkError = new Error('تعذّر الاتصال بخدمة الحسابات ولم يصل رد يؤكد إتمام العملية. تحقّق من الاتصال قبل إعادة المحاولة.');
+      networkError.code = 'manage_users_fetch';
+      throw networkError;
     }
 
     let msg = error.message || 'تعذر تنفيذ العملية';

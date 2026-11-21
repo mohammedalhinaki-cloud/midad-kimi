@@ -10,10 +10,25 @@ const PIN_SUFFIX = 'MD'; // internal mapping: 4-digit PIN -> 6+ char Auth passwo
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-api-version, x-region',
   'Access-Control-Max-Age': '86400',
+  'Vary': 'Origin, Access-Control-Request-Headers, Access-Control-Request-Method',
 };
+
+function preflightResponse(req: Request) {
+  const headers = new Headers(corsHeaders);
+  const requestedHeaders = req.headers.get('Access-Control-Request-Headers');
+  const requestedMethod = req.headers.get('Access-Control-Request-Method')?.toUpperCase();
+
+  // Reflect the exact preflight headers so browser/Supabase SDK version changes
+  // don't cause an otherwise valid request to be rejected by CORS.
+  if (requestedHeaders) headers.set('Access-Control-Allow-Headers', requestedHeaders);
+  if (requestedMethod === 'GET' || requestedMethod === 'POST') {
+    headers.set('Access-Control-Allow-Methods', `${requestedMethod}, OPTIONS`);
+  }
+  return new Response('ok', { headers });
+}
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -33,7 +48,10 @@ function validEmail(email: unknown): email is string {
 }
 
 Deno.serve(async (req) => {
-  if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
+  if (req.method === 'OPTIONS') return preflightResponse(req);
+  // Safe, unauthenticated connectivity probe. It reveals no project secrets or data.
+  if (req.method === 'GET') return json({ ok: true, service: 'manage-users' });
+  if (req.method !== 'POST') return json({ error: 'method_not_allowed' }, 405);
   try {
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
     const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
