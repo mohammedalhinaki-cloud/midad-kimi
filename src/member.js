@@ -1,5 +1,6 @@
 import {
   supabase, fetchActiveBook, fetchTodayAssignment, riyadhToday, formatHijri, formatHijriTime,
+  formatHijriNumeric, arabicOrdinal, toArabicDigits,
   fetchAllAssignments, fetchCompletions, fetchLeaves, isOnLeave, commitmentStats, escapeHtml, toast
 } from './lib.js';
 import { state } from './main.js';
@@ -20,7 +21,7 @@ export async function renderMemberHome(view) {
       return;
     }
     if (!assignment) {
-      view.innerHTML = `<div class="card center"><h2>${escapeHtml(book.title)}</h2><p class="muted">لا توجد قراءة مجدولة اليوم.</p></div>`;
+      view.innerHTML = `<div class="card center"><h2>${escapeHtml(book.title)}</h2><p class="muted">لم تنشر الإدارة قراءة اليوم بعد.</p></div>`;
       return;
     }
 
@@ -34,13 +35,28 @@ export async function renderMemberHome(view) {
     const onLeave = isOnLeave(leaves, me, assignment.assignment_date);
     const total = assignment.end_page - assignment.start_page + 1;
     const confirmed = session?.current_position || 0;
+    const dayNumber = Number(assignment.day_number);
+    const fromQuote = assignment.from_quote?.trim();
+    const toQuote = assignment.to_quote?.trim();
+    const hasReadingDayNumber = Number.isInteger(dayNumber) && dayNumber > 0;
+    const assignmentDetails = assignment.is_no_reading
+      ? ''
+      : hasReadingDayNumber
+        ? `<div class="reading-announcement">
+            <strong class="reading-announcement-title">مقدار اليوم ${escapeHtml(arabicOrdinal(dayNumber))}</strong>
+            <span class="reading-announcement-date">${formatHijriNumeric(assignment.assignment_date)}</span>
+            <p>من ص${toArabicDigits(assignment.start_page)} إلى ص ${toArabicDigits(assignment.end_page)}</p>
+            ${fromQuote ? `<p><strong>من قوله:</strong> ${escapeHtml(fromQuote)}</p>` : ''}
+            ${toQuote ? `<p><strong>إلى قوله:</strong> ${escapeHtml(toQuote)}</p>` : ''}
+          </div>`
+        : `<p>صفحات اليوم: <strong>${assignment.start_page} — ${assignment.end_page}</strong>
+            <span class="muted">(${total} ${total === 1 ? 'صفحة' : 'صفحات'})</span></p>`;
 
     let body = `
       <div class="card">
-        <p class="muted small" style="margin:0">${formatHijri(assignment.assignment_date)}</p>
+        ${hasReadingDayNumber && !assignment.is_no_reading ? '' : `<p class="muted small" style="margin:0">${formatHijri(assignment.assignment_date)}</p>`}
         <h2 style="margin-top:4px">${escapeHtml(book.title)}</h2>
-        <p>صفحات اليوم: <strong>${assignment.start_page} — ${assignment.end_page}</strong>
-          <span class="muted">(${total} ${total === 1 ? 'صفحة' : 'صفحات'})</span></p>`;
+        ${assignmentDetails}`;
 
     if (assignment.is_no_reading) {
       body += `
