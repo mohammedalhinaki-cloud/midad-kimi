@@ -1,5 +1,4 @@
-import { supabase, normalizeSaudiPhone, normalizePin, pinToPassword, callManageUsers, toast, escapeHtml } from './lib.js';
-import { SUPABASE_URL } from './config.js';
+import { supabase, normalizeSaudiPhone, normalizePin, pinToPassword, escapeHtml } from './lib.js';
 
 export function renderLogin(root) {
   root.innerHTML = `
@@ -41,10 +40,6 @@ export function renderLogin(root) {
           </div>
           <button type="submit" class="btn btn-primary btn-block" id="admin-btn">دخول</button>
         </form>
-
-        <p class="center small muted" style="margin-top:14px">
-          <a href="#" id="bootstrap-link">تهيئة النظام — إنشاء حساب المشرف الأول (أول مرة فقط)</a>
-        </p>
       </div>
     </div>`;
 
@@ -93,58 +88,5 @@ export function renderLogin(root) {
     btn.disabled = false; btn.textContent = 'دخول';
     if (error) return showError('بيانات الدخول غير صحيحة');
     location.hash = '#/admin';
-  });
-
-  root.querySelector('#bootstrap-link').addEventListener('click', (e) => {
-    e.preventDefault();
-    renderBootstrap(root);
-  });
-}
-
-function renderBootstrap(root) {
-  root.innerHTML = `
-    <div class="login-wrap">
-      <div class="card login-card">
-        <h2>إنشاء حساب المشرف الأول</h2>
-        <p class="muted small">هذه الخطوة متاحة مرة واحدة فقط عند بدء النظام، وبعدها تُعطَّل تلقائيًا.</p>
-        <div id="bs-error"></div>
-        <form id="bs-form" autocomplete="off">
-          <div class="field">
-            <label for="bs-name">الاسم الكامل</label>
-            <input class="input" id="bs-name" />
-          </div>
-          <div class="field">
-            <label for="bs-email">البريد الإلكتروني</label>
-            <input class="input" id="bs-email" type="email" dir="ltr" style="text-align:left" />
-          </div>
-          <div class="field">
-            <label for="bs-pass">كلمة المرور (6 أحرف على الأقل)</label>
-            <input class="input" id="bs-pass" type="password" dir="ltr" style="text-align:left" />
-          </div>
-          <button type="submit" class="btn btn-primary btn-block">إنشاء الحساب</button>
-          <button type="button" class="btn btn-ghost btn-block" id="bs-back">رجوع</button>
-        </form>
-      </div>
-    </div>`;
-  root.querySelector('#bs-back').addEventListener('click', () => renderLogin(root));
-  root.querySelector('#bs-form').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const errBox = root.querySelector('#bs-error');
-    const full_name = root.querySelector('#bs-name').value.trim();
-    const email = root.querySelector('#bs-email').value.trim();
-    const password = root.querySelector('#bs-pass').value;
-    try {
-      await callManageUsers('bootstrap_super_admin', { full_name, email, password });
-      toast('تم إنشاء حساب المشرف الأول بنجاح', 'ok');
-      renderLogin(root);
-    } catch (err) {
-      const msg = err.message === 'bootstrap_disabled'
-        ? 'تمت تهيئة النظام مسبقًا — لا يمكن إنشاء حساب مشرف أول جديد.'
-        : err.message;
-      const diagnosticLink = ['manage_users_fetch', 'manage_users_backend'].includes(err.code)
-        ? `<p class="small" style="margin:10px 0 0">لفحص وصول المتصفح إلى Supabase، افتح <a href="${escapeHtml(`${SUPABASE_URL}/functions/v1/manage-users`)}" target="_blank" rel="noopener noreferrer">فحص الاتصال</a>. ينبغي أن تظهر نتيجة JSON فيها <code>ok: true</code>.</p>`
-        : '';
-      errBox.innerHTML = `<div class="error-box">${escapeHtml(msg)}${diagnosticLink}</div>`;
-    }
   });
 }
