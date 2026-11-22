@@ -320,10 +320,11 @@ Deno.serve(async (req) => {
 
     if (action === 'set_status') {
       const { id, status, note } = body;
-      if (!id || !['active', 'suspended', 'excluded'].includes(status)) return json({ error: 'invalid_input' }, 400);
+      if (!id || !['active', 'suspended'].includes(status)) return json({ error: 'invalid_input' }, 400);
       const targetResult = await getProfile(id);
       const target = targetResult.profile;
       if (!target) return json({ error: 'target_not_found' }, 404);
+      if (target.status === 'excluded') return json({ error: 'legacy_account_requires_deletion' }, 409);
       if (target.id === caller.id) return json({ error: 'cannot_change_self' }, 400);
       if (!isSuper && target.role !== 'member') return json({ error: 'forbidden' }, 403);
       if (isSuper && target.role === 'super_admin') return json({ error: 'forbidden' }, 403);
@@ -345,7 +346,9 @@ Deno.serve(async (req) => {
       const target = targetResult.profile;
       if (!target) return json({ error: 'target_not_found' }, 404);
       if (target.role === 'super_admin') return json({ error: 'forbidden' }, 403);
-      await insertActivity(caller.id, 'delete_user', 'profile', id, { role: target.role, full_name: target.full_name });
+      // Deleting the Auth user cascades through profiles and the reading-data
+      // foreign keys. A profile DELETE trigger also purges activity rows that
+      // identify this account, without recording a new delete event.
       const deleted = await adminAuth('DELETE', `users/${encodeURIComponent(id)}`);
       if (!deleted.ok) return json({ error: apiError(deleted, 'delete_failed') }, 400);
       return json({ ok: true });

@@ -1,7 +1,7 @@
 import * as pdfjsLib from 'pdfjs-dist';
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import {
-  supabase, callManageUsers, logActivity, fetchActiveBook, fetchMembers, fetchAllAssignments,
+  supabase, callManageUsers, logActivity, fetchActiveBook, fetchMembers, fetchReaders, fetchAllAssignments,
   fetchCompletions, fetchLeaves, fetchSessions, riyadhToday, addDays,
   formatHijri, formatHijriTime, formatTime, arabicOrdinal, toArabicDigits, toWesternDigits,
   isOnLeave, memberDayStatus, consecutiveAbsence, commitmentStats,
@@ -50,9 +50,9 @@ export async function renderAdminDashboard(view) {
   view.innerHTML = '<p class="muted center">جارٍ التحميل…</p>';
   try {
     const today = riyadhToday();
-    const [assignmentRes, members, completions, leaves, sessions, book] = await Promise.all([
+    const [assignmentRes, readers, completions, leaves, sessions, book] = await Promise.all([
       supabase.rpc('get_today_assignment'),
-      fetchMembers(),
+      fetchReaders(),
       fetchCompletions(),
       fetchLeaves(),
       fetchSessions(),
@@ -63,16 +63,20 @@ export async function renderAdminDashboard(view) {
     const allAssignments = book ? await fetchAllAssignments(book.id) : [];
     const now = new Date();
 
-    const activeMembers = members.filter((m) => m.status === 'active');
+    const activeReaders = readers.filter((reader) => reader.status === 'active');
     let doneCount = 0;
     let rows = '';
 
-    for (const m of members) {
+    for (const m of readers) {
+      const name = m.role === 'member'
+        ? `<a href="#/admin/member/${m.id}">${escapeHtml(m.full_name)}</a>`
+        : `<strong>${escapeHtml(m.full_name)}</strong><br><span class="small muted">مشرف مساعد</span>`;
+      const contact = m.role === 'member' ? (m.phone || '') : (m.email || '');
       let statusHtml;
       if (m.status !== 'active') {
         statusHtml = m.status === 'suspended'
           ? '<span class="badge badge-warn">موقوف</span>'
-          : '<span class="badge badge-muted">مستبعد</span>';
+          : '<span class="badge badge-muted">حساب قديم — يلزم الحذف النهائي</span>';
       } else if (!assignment) {
         statusHtml = '<span class="badge badge-muted">لم تُنشر قراءة اليوم</span>';
       } else if (assignment.is_no_reading) {
@@ -84,19 +88,19 @@ export async function renderAdminDashboard(view) {
         const st = memberDayStatus({ assignment, completion, session, leave, now });
         if (st.key === 'done') doneCount += 1;
         const abs = consecutiveAbsence(allAssignments, completions, leaves, m.id, today);
-        const absHtml = abs >= 3
-          ? `<br><span class="small" style="color:var(--danger)">غائب ${abs} أيام متتالية — مؤهل للاستبعاد</span>`
+        const absHtml = abs >= 3 && m.role === 'member'
+          ? `<br><span class="small" style="color:var(--danger)">غائب ${abs} أيام متتالية — مؤهل للحذف النهائي</span>`
           : abs > 0 ? `<br><span class="small muted">غائب ${abs} ${abs === 1 ? 'يوم' : 'أيام'} متتالية</span>` : '';
         statusHtml = `<span class="badge badge-${st.tone}">${st.label}</span>${
           st.time ? `<br><span class="small muted">${formatTime(st.time)}</span>` : ''}${absHtml}`;
       }
       rows += `<li>
-        <span><a href="#/admin/member/${m.id}">${escapeHtml(m.full_name)}</a><br><span class="small muted" dir="ltr">${escapeHtml(m.phone || '')}</span></span>
+        <span>${name}<br><span class="small muted" dir="ltr">${escapeHtml(contact)}</span></span>
         <span>${statusHtml}</span>
       </li>`;
     }
 
-    const notDone = assignment && !assignment.is_no_reading ? activeMembers.length - doneCount : 0;
+    const notDone = assignment && !assignment.is_no_reading ? activeReaders.length - doneCount : 0;
 
     view.innerHTML = `
       <div class="card">
@@ -165,7 +169,7 @@ export async function renderAdminMembers(view) {
               <span class="small muted" dir="ltr">${escapeHtml(m.phone || '')}</span></span>
             <span>${m.status === 'active' ? '<span class="badge badge-ok">نشط</span>'
               : m.status === 'suspended' ? '<span class="badge badge-warn">موقوف</span>'
-              : '<span class="badge badge-muted">مستبعد</span>'}</span>
+              : '<span class="badge badge-muted">مستبعد سابقًا — يلزم الحذف النهائي</span>'}</span>
           </li>`).join('') || '<li>لا يوجد أعضاء بعد.</li>'}
         </ul>
       </div>`;
@@ -249,7 +253,7 @@ export async function renderMemberDetail(view, memberId) {
           </div>
           <span>${m.status === 'active' ? '<span class="badge badge-ok">نشط</span>'
             : m.status === 'suspended' ? '<span class="badge badge-warn">موقوف</span>'
-            : '<span class="badge badge-muted">مستبعد</span>'}</span>
+            : '<span class="badge badge-muted">مستبعد سابقًا — يلزم الحذف النهائي</span>'}</span>
         </div>
         <div class="stats">
           <div class="stat"><div class="num">${stats.pct}%</div><div class="lbl">نسبة الالتزام</div></div>
@@ -257,23 +261,21 @@ export async function renderMemberDetail(view, memberId) {
           <div class="stat"><div class="num">${abs}</div><div class="lbl">غياب متتالٍ</div></div>
           <div class="stat"><div class="num">${stats.total}</div><div class="lbl">أيام قراءة</div></div>
         </div>
-        ${abs >= 3 && m.status === 'active' ? '<p style="color:var(--danger)">هذا العضو مؤهل للاستبعاد (3 أيام غياب متتالية) — القرار للإدارة.</p>' : ''}
+        ${abs >= 3 && m.status === 'active' && m.role === 'member' ? '<p style="color:var(--danger)">هذا العضو مؤهل للحذف النهائي (3 أيام غياب متتالية) — القرار للإدارة.</p>' : ''}
       </div>
 
       <div class="card">
         <h3>إجراءات</h3>
         <div class="row">
-          <button type="button" class="btn btn-sm" id="act-edit">تعديل البيانات</button>
-          <button type="button" class="btn btn-sm" id="act-pin">إعادة تعيين الرقم السري</button>
+          ${m.status !== 'excluded' ? '<button type="button" class="btn btn-sm" id="act-edit">تعديل البيانات</button>' : ''}
+          ${m.status !== 'excluded' ? '<button type="button" class="btn btn-sm" id="act-pin">إعادة تعيين الرقم السري</button>' : ''}
           ${m.status === 'active'
             ? '<button type="button" class="btn btn-sm" id="act-suspend">إيقاف</button>'
-            : '<button type="button" class="btn btn-sm" id="act-activate">تفعيل</button>'}
-          ${m.status !== 'excluded'
-            ? '<button type="button" class="btn btn-sm" id="act-exclude">استبعاد</button>'
-            : '<button type="button" class="btn btn-sm" id="act-restore">استعادة</button>'}
-          <button type="button" class="btn btn-sm" id="act-leave">منح إجازة</button>
+            : m.status === 'suspended' ? '<button type="button" class="btn btn-sm" id="act-activate">تفعيل</button>' : ''}
+          ${m.status !== 'excluded' ? '<button type="button" class="btn btn-sm" id="act-leave">منح إجازة</button>' : ''}
           ${state.profile.role === 'super_admin' ? '<button type="button" class="btn btn-sm btn-danger" id="act-delete">حذف نهائي</button>' : ''}
         </div>
+        ${m.status === 'excluded' ? '<p class="small muted">هذا حساب قديم من سياسة سابقة ولا يمكن استعادته. يستطيع المشرف العام حذفه نهائيًا.</p>' : ''}
       </div>
 
       <div class="card">
@@ -296,7 +298,7 @@ export async function renderMemberDetail(view, memberId) {
 
     const refresh = () => renderMemberDetail(view, memberId);
 
-    view.querySelector('#act-edit').addEventListener('click', () => {
+    view.querySelector('#act-edit')?.addEventListener('click', () => {
       const { overlay, close } = openModal('تعديل بيانات العضو', `
         <form id="edit-form">
           <div class="field"><label>الاسم الكامل</label><input class="input" id="ef-name" value="${escapeHtml(m.full_name)}" /></div>
@@ -315,7 +317,7 @@ export async function renderMemberDetail(view, memberId) {
       });
     });
 
-    view.querySelector('#act-pin').addEventListener('click', () => {
+    view.querySelector('#act-pin')?.addEventListener('click', () => {
       const { overlay, close } = openModal('إعادة تعيين الرقم السري', `
         <form id="pin-form">
           <div class="field"><label>الرقم السري الجديد (4 أرقام)</label>
@@ -341,13 +343,9 @@ export async function renderMemberDetail(view, memberId) {
     };
     view.querySelector('#act-suspend')?.addEventListener('click', () => setStatus('suspended', 'suspended_by_admin'));
     view.querySelector('#act-activate')?.addEventListener('click', () => setStatus('active', 'reactivated'));
-    view.querySelector('#act-exclude')?.addEventListener('click', () => {
-      if (confirm('استبعاد هذا العضو؟ سيُحفظ سجل قراءته ويمكن استعادته لاحقًا.')) setStatus('excluded', 'excluded_by_admin');
-    });
-    view.querySelector('#act-restore')?.addEventListener('click', () => setStatus('active', 'restored'));
 
     view.querySelector('#act-delete')?.addEventListener('click', async () => {
-      if (!confirm('حذف نهائي لهذا العضو وكل سجلاته؟ لا يمكن التراجع.')) return;
+      if (!confirm('حذف هذا الحساب نهائيًا؟ ستُحذف أيضًا سجلات القراءة والبيانات المرتبطة به، ولا يمكن التراجع.')) return;
       try {
         await callManageUsers('delete_user', { id: memberId });
         toast('تم الحذف النهائي', 'ok');
@@ -355,7 +353,7 @@ export async function renderMemberDetail(view, memberId) {
       } catch (err) { toast(err.message, 'error'); }
     });
 
-    view.querySelector('#act-leave').addEventListener('click', () => {
+    view.querySelector('#act-leave')?.addEventListener('click', () => {
       const { overlay, close } = openModal('منح إجازة', `
         <form id="leave-form">
           <div class="field"><label>من تاريخ</label><input class="input" id="lf-from" type="date" value="${today}" /></div>
@@ -988,8 +986,8 @@ export async function renderReports(view) {
   try {
     const today = riyadhToday();
     const book = await fetchActiveBook();
-    const members = await fetchMembers();
-    const activeMembers = members.filter((m) => m.status === 'active');
+    const readers = await fetchReaders();
+    const activeReaders = readers.filter((reader) => reader.status === 'active');
 
     view.innerHTML = `
       <div class="card">
@@ -1008,7 +1006,7 @@ export async function renderReports(view) {
         <div id="rep-weekly"><p class="muted">جارٍ التحميل…</p></div>
       </div>
       <div class="card">
-        <h3>نسبة التزام الأعضاء</h3>
+        <h3>نسبة التزام القراء</h3>
         <div id="rep-commitment"><p class="muted">جارٍ التحميل…</p></div>
       </div>`;
 
@@ -1035,7 +1033,7 @@ export async function renderReports(view) {
       }
       const now = new Date();
       let done = 0;
-      const rows = activeMembers.map((m) => {
+      const rows = activeReaders.map((m) => {
         const c = completions.find((x) => x.member_id === m.id && x.assignment_id === assignment.id);
         const s = sessions.find((x) => x.member_id === m.id && x.assignment_id === assignment.id);
         const leave = isOnLeave(leaves, m.id, date);
@@ -1043,15 +1041,16 @@ export async function renderReports(view) {
           ? { label: 'لا قراءة', tone: 'muted' }
           : memberDayStatus({ assignment, completion: c, session: s, leave, now });
         if (st.key === 'done') done += 1;
-        return `<tr><td>${escapeHtml(m.full_name)}</td>
+        const roleLabel = m.role === 'assistant_admin' ? ' <span class="small muted">(مشرف مساعد)</span>' : '';
+        return `<tr><td>${escapeHtml(m.full_name)}${roleLabel}</td>
           <td><span class="badge badge-${st.tone}">${st.label}</span></td>
           <td class="small muted">${st.time ? formatHijriTime(st.time) : '—'}</td></tr>`;
       }).join('');
       out.innerHTML = `
         <h3>تقرير ${formatHijri(date)}</h3>
         <p class="muted small">${escapeHtml(book.title)} — صفحات ${assignment.start_page} — ${assignment.end_page}
-          · أكملوا: ${done} من ${activeMembers.length}</p>
-        <table class="tbl"><thead><tr><th>العضو</th><th>الحالة</th><th>وقت الإكمال</th></tr></thead>
+          · أكملوا: ${done} من ${activeReaders.length}</p>
+        <table class="tbl"><thead><tr><th>القارئ</th><th>الحالة</th><th>وقت الإكمال</th></tr></thead>
         <tbody>${rows}</tbody></table>`;
     }
     view.querySelector('#rep-daily-btn').addEventListener('click', dailyReport);
@@ -1066,26 +1065,28 @@ export async function renderReports(view) {
         .map((date) => allAssignments.find((assignment) => assignment.assignment_date === date))
         .filter((assignment) => assignment?.is_override);
       const [completions, leaves] = await Promise.all([fetchCompletions(), fetchLeaves()]);
-      const weeklyRows = activeMembers.map((m) => {
+      const weeklyRows = activeReaders.map((m) => {
         const relevant = weekAssignments.filter((a) => !a.is_no_reading && !isOnLeave(leaves, m.id, a.assignment_date));
         const done = relevant.filter((a) => completions.some((c) => c.member_id === m.id && c.assignment_id === a.id && c.counts_as_completed)).length;
-        return `<tr><td>${escapeHtml(m.full_name)}</td><td>${done} / ${relevant.length}</td></tr>`;
+        const roleLabel = m.role === 'assistant_admin' ? ' <span class="small muted">(مشرف مساعد)</span>' : '';
+        return `<tr><td>${escapeHtml(m.full_name)}${roleLabel}</td><td>${done} / ${relevant.length}</td></tr>`;
       }).join('');
-      const totalExpected = activeMembers.length * weekAssignments.filter((a) => !a.is_no_reading).length;
+      const totalExpected = activeReaders.length * weekAssignments.filter((a) => !a.is_no_reading).length;
       const totalDone = weekAssignments.filter((a) => !a.is_no_reading).reduce(
-        (sum, a) => sum + completions.filter((c) => c.assignment_id === a.id && c.counts_as_completed && activeMembers.some((m) => m.id === c.member_id)).length, 0);
+        (sum, a) => sum + completions.filter((c) => c.assignment_id === a.id && c.counts_as_completed && activeReaders.some((m) => m.id === c.member_id)).length, 0);
       view.querySelector('#rep-weekly').innerHTML = `
         <p class="muted small">تقدم المجموعة هذا الأسبوع: ${totalDone} من ${totalExpected} قراءة
           (${totalExpected ? Math.round((totalDone / totalExpected) * 100) : 0}%)</p>
-        <table class="tbl"><thead><tr><th>العضو</th><th>قراءات مكتملة</th></tr></thead><tbody>${weeklyRows}</tbody></table>`;
+        <table class="tbl"><thead><tr><th>القارئ</th><th>قراءات مكتملة</th></tr></thead><tbody>${weeklyRows}</tbody></table>`;
 
       // Commitment
-      const commitRows = activeMembers.map((m) => {
+      const commitRows = activeReaders.map((m) => {
         const s = commitmentStats(allAssignments, completions, leaves, m.id, today);
-        return `<tr><td>${escapeHtml(m.full_name)}</td><td>${s.pct}%</td><td>${s.done} / ${s.total}</td></tr>`;
+        const roleLabel = m.role === 'assistant_admin' ? ' <span class="small muted">(مشرف مساعد)</span>' : '';
+        return `<tr><td>${escapeHtml(m.full_name)}${roleLabel}</td><td>${s.pct}%</td><td>${s.done} / ${s.total}</td></tr>`;
       }).join('');
       view.querySelector('#rep-commitment').innerHTML =
-        `<table class="tbl"><thead><tr><th>العضو</th><th>النسبة</th><th>الأيام</th></tr></thead><tbody>${commitRows}</tbody></table>`;
+        `<table class="tbl"><thead><tr><th>القارئ</th><th>النسبة</th><th>الأيام</th></tr></thead><tbody>${commitRows}</tbody></table>`;
     }
   } catch (e) {
     view.innerHTML = `<div class="card center"><p>حدث خطأ: ${escapeHtml(e.message)}</p></div>`;
