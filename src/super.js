@@ -81,7 +81,7 @@ export async function renderSuperHome(view) {
     view.querySelectorAll('[data-suspend]').forEach((b) => b.addEventListener('click', () => setStatus(b.dataset.suspend, 'suspended')));
     view.querySelectorAll('[data-activate]').forEach((b) => b.addEventListener('click', () => setStatus(b.dataset.activate, 'active')));
     view.querySelectorAll('[data-delete]').forEach((b) => b.addEventListener('click', async () => {
-      if (!confirm('حذف هذا المشرف المساعد نهائيًا؟')) return;
+      if (!confirm('حذف حساب هذا المشرف المساعد نهائيًا؟ ستُحذف بياناته وسجلات نشاطه المرتبطة، ولا يمكن التراجع.')) return;
       try {
         await callManageUsers('delete_user', { id: b.dataset.delete });
         toast('تم الحذف', 'ok'); renderSuperHome(view);
@@ -107,14 +107,14 @@ export async function renderSuperMembers(view) {
             <span class="row">
               ${m.status === 'active' ? '<span class="badge badge-ok">نشط</span>'
                 : m.status === 'suspended' ? '<span class="badge badge-warn">موقوف</span>'
-                : '<span class="badge badge-muted">مستبعد</span>'}
+                : '<span class="badge badge-muted">مستبعد سابقًا — يلزم الحذف النهائي</span>'}
               <button type="button" class="btn btn-sm btn-danger" data-delete="${m.id}">حذف نهائي</button>
             </span>
           </li>`).join('') || '<li>لا يوجد أعضاء بعد.</li>'}
         </ul>
       </div>`;
     view.querySelectorAll('[data-delete]').forEach((b) => b.addEventListener('click', async () => {
-      if (!confirm('حذف نهائي لهذا العضو وكل سجلاته؟ لا يمكن التراجع.')) return;
+      if (!confirm('حذف حساب هذا العضو نهائيًا؟ ستُحذف أيضًا قراءاته وبياناته المرتبطة، ولا يمكن التراجع.')) return;
       try {
         await callManageUsers('delete_user', { id: b.dataset.delete });
         toast('تم الحذف النهائي', 'ok'); renderSuperMembers(view);

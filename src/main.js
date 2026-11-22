@@ -66,7 +66,7 @@ function renderBlocked() {
   const p = state.profile;
   const msg = p.status === 'suspended'
     ? 'حسابك موقوف مؤقتًا. تواصل مع إدارة المجموعة.'
-    : 'تم استبعادك من المجموعة. تواصل مع إدارة المجموعة لمزيد من المعلومات.';
+    : 'هذا حساب قديم موقوف عن الدخول. تواصل مع إدارة المجموعة لإتمام حذفه نهائيًا.';
   app.innerHTML = `
     <div class="login-wrap"><div class="card login-card center">
       <h1>مِداد</h1>

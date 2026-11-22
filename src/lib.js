@@ -206,7 +206,11 @@ export async function callManageUsers(action, payload = {}) {
     let diagnosticCode = null;
     try {
       const ctx = await error.context.json();
-      if (ctx?.error) msg = ctx.error;
+      const errorLabels = {
+        invalid_input: 'البيانات المرسلة غير صالحة',
+        legacy_account_requires_deletion: 'هذا حساب قديم لا يمكن استعادته؛ احذفه نهائيًا من قائمة الأعضاء'
+      };
+      if (ctx?.error) msg = errorLabels[ctx.error] || ctx.error;
       if (ctx?.reason) {
         const labels = {
           service_key_rejected: 'رفض Supabase مفتاح خدمة الحسابات',
@@ -255,6 +259,15 @@ export async function fetchTodayAssignment() {
 export async function fetchMembers() {
   const { data, error } = await supabase
     .from('profiles').select('*').eq('role', 'member')
+    .order('full_name', { ascending: true });
+  if (error) throw error;
+  return data || [];
+}
+
+/** All member and assistant-admin profiles, including legacy inactive records. */
+export async function fetchReaders() {
+  const { data, error } = await supabase
+    .from('profiles').select('*').in('role', ['member', 'assistant_admin'])
     .order('full_name', { ascending: true });
   if (error) throw error;
   return data || [];
